@@ -34,7 +34,7 @@ import {
 const CONNECTOR_CHECK_PROMPT =
   "List my trading connector profiles, show which one is selected, then check that selected connector. If it is not ready, tell me exactly what setup step is missing. Do not place or modify orders.";
 const CONNECTOR_PORTFOLIO_PROMPT =
-  "Use the selected trading connector profile to summarize my account, positions, concentration, cash, and portfolio risk. Do not place or modify orders.";
+  "Use the selected trading connector profile to summarize my account, positions, concentration, cash, and portfolio risk. Read whatever account shape the connector returns (QMT assets/total_asset in CNY, Longbridge balances, IBKR summary, or a flat account mapping). Do not place or modify orders.";
 
 const ACCEPTED_FILE_TYPES =
   ".pdf,.docx,.xlsx,.xls,.pptx,.csv,.tsv,.txt,.md,.log,.json,.yaml,.yml,.toml,.html,.xml,.rst,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tiff";

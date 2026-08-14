@@ -139,7 +139,7 @@ def _num_or_none(value: Any, field: str = "value") -> float | None:
 TRADING_COMMON_PARAMETERS = {
     "connection": {
         "type": "string",
-        "description": "Trading connector profile id, e.g. ibkr-paper-local or robinhood-live-mcp. Defaults to the selected profile.",
+        "description": "Trading connector profile id, e.g. qmt-live-sdk-readonly or ibkr-paper-local. Defaults to the selected profile.",
     },
     "host": {
         "type": "string",
@@ -155,7 +155,7 @@ TRADING_COMMON_PARAMETERS = {
     },
     "account": {
         "type": "string",
-        "description": "Optional account code filter when supported by the connector.",
+        "description": "Optional account code filter when supported (IBKR account, QMT account_id / QMT_BRIDGE_ACCOUNT_ID).",
     },
 }
 
@@ -210,7 +210,10 @@ class TradingConnectionsTool(BaseTool):
 
     name = "trading_connections"
     description = (
-        "List selectable trading connector profiles. Connectors come first; paper/live is a profile attribute."
+        "List selectable trading connector profiles. Returns a compact per-broker "
+        "summary first (including QMT / A-share Bridge), then profile ids. "
+        "Paper/live is a profile attribute. If the selected profile is unreachable, "
+        "pick another id from this list and pass it as connection=."
     )
     parameters = {"type": "object", "properties": {}, "required": []}
     repeatable = True
@@ -220,15 +223,79 @@ class TradingConnectionsTool(BaseTool):
         """List connector profiles and mark the selected one."""
         try:
             selected = load_selected_profile_id()
+            profiles = list(list_profiles())
             return _json_result(
                 {
                     "status": "ok",
                     "selected_profile": selected,
-                    "profiles": [profile.to_dict(selected=profile.id == selected) for profile in list_profiles()],
+                    "connectors": _compact_connectors(profiles, selected),
+                    "profiles": [
+                        {
+                            "id": profile.id,
+                            "connector": profile.connector,
+                            "label": profile.label,
+                            "environment": profile.environment,
+                            "transport": profile.transport,
+                            "readonly": profile.readonly,
+                            "selected": profile.id == selected,
+                        }
+                        for profile in profiles
+                    ],
                 }
             )
         except Exception as exc:  # noqa: BLE001
             return _json_result({"status": "error", "error": str(exc)})
+
+
+def _compact_connectors(profiles: list[Any], selected: str) -> list[dict[str, Any]]:
+    """Group profiles by broker so later entries (e.g. QMT) are not lost in a long dump."""
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for profile in profiles:
+        entry = grouped.get(profile.connector)
+        if entry is None:
+            entry = {
+                "connector": profile.connector,
+                "environments": [],
+                "profiles": [],
+                "readonly_only": True,
+                "selected": False,
+            }
+            grouped[profile.connector] = entry
+            order.append(profile.connector)
+        if profile.environment not in entry["environments"]:
+            entry["environments"].append(profile.environment)
+        entry["profiles"].append(profile.id)
+        if not profile.readonly:
+            entry["readonly_only"] = False
+        if profile.id == selected:
+            entry["selected"] = True
+    rows = [grouped[key] for key in order]
+    for row in rows:
+        row["configured_hint"] = _connector_configured_hint(row["connector"])
+    rows.sort(
+        key=lambda row: (
+            not row["selected"],
+            row["configured_hint"] != "env",
+            row["connector"],
+        )
+    )
+    return rows
+
+
+def _connector_configured_hint(connector: str) -> str:
+    """Cheap env-presence hint; does not probe the broker network."""
+    if connector != "qmt":
+        return "unknown"
+    try:
+        from src.config.accessor import get_env_config
+
+        data = get_env_config().data
+        if str(data.qmt_bridge_api_key or "").strip():
+            return "env"
+    except Exception:  # noqa: BLE001 — listing must never fail
+        return "unknown"
+    return "missing"
 
 
 class TradingSelectConnectionTool(BaseTool):
@@ -241,7 +308,7 @@ class TradingSelectConnectionTool(BaseTool):
         "properties": {
             "connection": {
                 "type": "string",
-                "description": "Profile id to select, e.g. ibkr-paper-local.",
+                "description": "Profile id to select, e.g. qmt-live-sdk-readonly or ibkr-paper-local.",
             }
         },
         "required": ["connection"],
@@ -263,7 +330,12 @@ class TradingCheckTool(BaseTool):
     """Check a trading connector profile."""
 
     name = "trading_check"
-    description = "Check whether a trading connector profile is configured and reachable. This never places orders."
+    description = (
+        "Check whether a trading connector profile is configured and reachable. "
+        "This never places orders. Omit connection to use the selected profile; "
+        "if that profile is down (e.g. IBKR TWS not running), call trading_connections "
+        "and retry with an explicit id such as qmt-live-sdk-readonly."
+    )
     parameters = {
         "type": "object",
         "properties": TRADING_COMMON_PARAMETERS,
@@ -284,7 +356,10 @@ class TradingAccountTool(BaseTool):
     """Read account summary from a trading connector profile."""
 
     name = "trading_account"
-    description = "Read account summary from the selected trading connector profile. Read-only."
+    description = (
+        "Read account summary from the selected trading connector profile. "
+        "QMT returns assets/cash/total_asset (CNY) plus balances and a flat account mapping. Read-only."
+    )
     parameters = TradingCheckTool.parameters
     repeatable = True
     is_readonly = True

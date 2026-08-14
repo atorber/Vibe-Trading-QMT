@@ -4084,6 +4084,29 @@ def _print_connector_balances(result: dict[str, Any]) -> int:
     return EXIT_SUCCESS
 
 
+def _assets_as_balances(assets: list[Any]) -> list[dict[str, Any]]:
+    """Map QMT/Futu/Tiger ``assets`` rows onto the shared balances table keys."""
+    rows: list[dict[str, Any]] = []
+    for item in assets:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "currency": item.get("currency") or "",
+                "net_assets": _first_present(
+                    item, "total_asset", "total_assets", "net_assets", "net_liquidation"
+                ),
+                "total_cash": _first_present(item, "cash", "total_cash"),
+                "buy_power": _first_present(
+                    item, "available", "available_funds", "buy_power", "buying_power", "power"
+                ),
+                "init_margin": _first_present(item, "frozen", "init_margin"),
+                "maintenance_margin": item.get("maintenance_margin"),
+            }
+        )
+    return rows
+
+
 def _normalize_mcp_value(value: Any) -> Any:
     """Unwrap a value from a remote MCP call into plain JSON-safe data.
 
@@ -4179,10 +4202,30 @@ def _print_connector_account(result: dict[str, Any]) -> int:
     rows = result.get("summary", [])
     # broker_sdk connectors (Longbridge, …) return a ``balances`` list instead of
     # IBKR-style ``summary`` tag/value rows; render that when present (#735).
+    # QMT/Futu/Tiger expose the same numbers as ``assets`` — map those keys so
+    # the account table is not empty just because the connector used another name.
     if not rows and result.get("balances"):
         label = accounts if accounts != "(none)" else result.get("profile_id", result.get("profile", "unknown"))
+        if accounts == "(none)" and result.get("account_id"):
+            label = result.get("account_id")
         console.print(f"Accounts: [cyan]{rich_escape(str(label))}[/cyan]")
         return _print_connector_balances(result)
+    if not rows and result.get("assets"):
+        raw_assets = result.get("assets") or []
+        if isinstance(raw_assets, dict):
+            raw_assets = [raw_assets]
+        label = (
+            accounts
+            if accounts != "(none)"
+            else result.get("account_id")
+            or result.get("profile_id")
+            or result.get("profile")
+            or "unknown"
+        )
+        console.print(f"Accounts: [cyan]{rich_escape(str(label))}[/cyan]")
+        return _print_connector_balances(
+            {**result, "balances": _assets_as_balances(raw_assets)}
+        )
     account_data = _normalize_mcp_value(result.get("account"))
     if not rows and isinstance(account_data, dict) and account_data:
         return _print_connector_account_mapping(result, account_data)
@@ -4323,11 +4366,11 @@ def cmd_connector_positions(
     for row in rows:
         # Tolerate both IBKR-style and broker_sdk (Longbridge, …) schemas (#735):
         # position→quantity, avg_cost→cost_price, sec_type→market.
-        qty = _first_present(row, "position", "quantity")
-        avg_cost = _first_present(row, "avg_cost", "cost_price")
+        qty = _first_present(row, "position", "quantity", "qty")
+        avg_cost = _first_present(row, "avg_cost", "cost_price", "average_cost")
         table.add_row(
-            str(row.get("account") or ""),
-            str(row.get("local_symbol") or row.get("symbol") or ""),
+            str(row.get("account") or row.get("account_id") or ""),
+            str(row.get("local_symbol") or row.get("symbol") or row.get("code") or ""),
             str(row.get("sec_type") or row.get("market") or ""),
             "" if qty is None else str(qty),
             "" if avg_cost is None else str(avg_cost),
@@ -4376,17 +4419,34 @@ def cmd_connector_orders(
     table.add_column("Limit", justify="right")
     table.add_column("Status")
     for row in orders:
-        contract = row.get("contract") or {}
-        order = row.get("order") or row
-        order_status = row.get("status") or {}
+        contract = row.get("contract") if isinstance(row.get("contract"), dict) else {}
+        nested_order = row.get("order") if isinstance(row.get("order"), dict) else {}
+        order = nested_order or row
+        raw_status = row.get("status")
+        if isinstance(raw_status, dict):
+            status_text = raw_status.get("status") or ""
+        else:
+            status_text = raw_status or row.get("order_status") or ""
+        qty = _first_present(order, "total_quantity", "qty", "quantity")
+        if qty is None:
+            qty = _first_present(row, "qty", "quantity", "total_quantity")
+        limit = _first_present(order, "limit_price", "price")
+        if limit is None:
+            limit = _first_present(row, "price", "limit_price")
         table.add_row(
-            str(order.get("account") or ""),
-            str(contract.get("local_symbol") or contract.get("symbol") or ""),
-            str(order.get("action") or ""),
-            str(order.get("order_type") or ""),
-            str(order.get("total_quantity") or ""),
-            str(order.get("limit_price") or ""),
-            str(order_status.get("status") or ""),
+            str(order.get("account") or row.get("account") or row.get("account_id") or ""),
+            str(
+                contract.get("local_symbol")
+                or contract.get("symbol")
+                or row.get("symbol")
+                or row.get("code")
+                or ""
+            ),
+            str(order.get("action") or row.get("side") or row.get("trd_side") or ""),
+            str(order.get("order_type") or row.get("order_type") or ""),
+            "" if qty is None else str(qty),
+            "" if limit is None else str(limit),
+            str(status_text or ""),
         )
     console.print(table)
     return EXIT_SUCCESS
@@ -4425,7 +4485,9 @@ def cmd_connector_quote(
     if result.get("status") == "error":
         console.print(f"[red]{rich_escape(str(result.get('error')))}[/red]")
         return EXIT_RUN_FAILED
-    quote = result.get("quote", {})
+    quote = result.get("quote") or {}
+    if not isinstance(quote, dict):
+        quote = {}
     table = Table(title=f"Quote {result.get('symbol', symbol)} · {result.get('profile_id')}", box=box.SIMPLE_HEAVY)
     table.add_column("Bid", justify="right")
     table.add_column("Ask", justify="right")
@@ -4433,11 +4495,11 @@ def cmd_connector_quote(
     table.add_column("Close", justify="right")
     table.add_column("Volume", justify="right")
     table.add_row(
-        str(quote.get("bid") or ""),
-        str(quote.get("ask") or ""),
-        str(quote.get("last") or ""),
-        str(quote.get("close") or ""),
-        str(quote.get("volume") or ""),
+        str(_first_present(quote, "bid", "bid_price") or ""),
+        str(_first_present(quote, "ask", "ask_price") or ""),
+        str(_first_present(quote, "last", "last_price") or ""),
+        str(_first_present(quote, "close", "prev_close") or ""),
+        str(_first_present(quote, "volume") or ""),
     )
     console.print(table)
     return EXIT_SUCCESS

@@ -31,6 +31,7 @@ const ENV_CREDENTIALS = new Set([
   "ZAI_API_KEY",
   "TUSHARE_TOKEN",
   "QVERIS_API_KEY",
+  "QMT_BRIDGE_API_KEY",
 ]);
 
 const PLACEHOLDER_VALUES = new Set([

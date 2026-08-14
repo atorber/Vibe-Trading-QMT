@@ -195,6 +195,11 @@ class DataConfig(_EnvBase):
     longbridge_access_token: str = Field(alias="LONGBRIDGE_ACCESS_TOKEN", default="")
     etoro_api_key: str = Field(alias="ETORO_API_KEY", default="")
     etoro_user_key: str = Field(alias="ETORO_USER_KEY", default="")
+    # QMT Bridge client (connect to Windows qmt-server over LAN HTTP).
+    qmt_bridge_host: str = Field(alias="QMT_BRIDGE_HOST", default="127.0.0.1")
+    qmt_bridge_port: int = Field(alias="QMT_BRIDGE_PORT", default=8000)
+    qmt_bridge_api_key: str = Field(alias="QMT_BRIDGE_API_KEY", default="")
+    qmt_bridge_account_id: str = Field(alias="QMT_BRIDGE_ACCOUNT_ID", default="")
 
 
 # ---------------------------------------------------------------------------

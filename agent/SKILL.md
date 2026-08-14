@@ -206,7 +206,7 @@ Use `load_skill(name)` to access full methodology docs with code templates.
 | `technical_indicators` | RSI / MACD / Bollinger / SMA / EMA through the existing loaders | None* |
 | `get_fundamentals` | PIT-safe SEC fundamentals panels (filed-date anchored) | None |
 
-<sub>*A-share symbols require `TUSHARE_TOKEN`. HK/US/Canada/crypto are free. Trading connector rows use the selected connector profile, e.g. IBKR local TWS/Gateway or Robinhood MCP OAuth.</sub>
+<sub>*A-share symbols require `TUSHARE_TOKEN`. HK/US/Canada/crypto are free. Trading connector rows use the selected connector profile, e.g. QMT Bridge (`qmt-live-sdk-readonly`), IBKR local TWS/Gateway, or Robinhood MCP OAuth.</sub>
 
 ## Quick Start
 

@@ -97,6 +97,7 @@
     "connectedAccessUnknown": "متصل · صلاحية الوصول غير معروفة",
     "missingLongbridgeVariables": "الإعدادات ناقصة. اضبط المتغيرات التالية في agent/.env، ثم أعد إنشاء الخدمة:",
     "missingEtoroVariables": "الإعدادات ناقصة. اضبط متغيرات البيئة التالية أو أنشئ ~/.vibe-trading/etoro.json:",
+    "missingQmtVariables": "الإعدادات ناقصة. اضبط متغيرات QMT Bridge التالية في agent/.env، ثم أعد إنشاء الخدمة:",
     "missingEtoroFileHint": "مثال: {\"api_key\": \"YOUR_PUBLIC_API_KEY\", \"user_key\": \"YOUR_USER_KEY\", \"profile\": \"live-readonly\"}. الملفات: etoro-paper-sdk، etoro-live-sdk-readonly، etoro-paper-trade، etoro-live-trade.",
     "missingConnectorVariables": "الإعدادات ناقصة. اضبط بيانات اعتماد الموصل في ~/.vibe-trading/ أو agent/.env ثم تحقق من الاتصال.",
     "pathSeparatedKeyBound": "مسارات منفصلة للتجريبي/الحقيقي (مفتاح مشترك)",

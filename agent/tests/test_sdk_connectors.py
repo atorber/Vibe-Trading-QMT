@@ -66,7 +66,7 @@ def test_no_discriminator_brokers_expose_no_live_trade_profile() -> None:
     Shoonya) must NOT register any live order-placing profile — the Longbridge
     precedent. A ``*-live-trade`` profile here would be a red-line regression."""
     ids = {p.id for p in profiles.list_profiles()}
-    for broker in ("longbridge", "dhan", "shoonya"):
+    for broker in ("longbridge", "dhan", "shoonya", "qmt"):
         assert f"{broker}-live-trade" not in ids
         # No live profile for these brokers may advertise an order capability.
         for p in profiles.list_profiles():
@@ -95,6 +95,8 @@ def test_no_discriminator_brokers_expose_no_live_trade_profile() -> None:
         ("shoonya-live-sdk-readonly", "shoonya", "live"),
         ("etoro-paper-sdk", "etoro", "paper"),
         ("etoro-live-sdk-readonly", "etoro", "live"),
+        ("qmt-paper-sdk", "qmt", "paper"),
+        ("qmt-live-sdk-readonly", "qmt", "live"),
     ],
 )
 def test_sdk_profiles_are_readonly_broker_sdk(profile_id, connector, environment) -> None:
@@ -594,6 +596,7 @@ def test_okx_invalid_profile_rejected() -> None:
         ("futu", "place_order"),
         ("dhan", "place_order"),
         ("shoonya", "place_order"),
+        ("qmt", "place_order"),
     ],
 )
 def test_order_ops_write_pinned_via_registry(broker, order_op) -> None:

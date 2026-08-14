@@ -423,6 +423,15 @@ const SDK_CONNECTOR_SETUP_HINTS = {
     variables: ["ETORO_API_KEY", "ETORO_USER_KEY"],
     fileHintKey: "runtime.missingEtoroFileHint",
   },
+  qmt: {
+    introKey: "runtime.missingQmtVariables",
+    variables: [
+      "QMT_BRIDGE_HOST",
+      "QMT_BRIDGE_PORT",
+      "QMT_BRIDGE_API_KEY",
+      "QMT_BRIDGE_ACCOUNT_ID",
+    ],
+  },
 } as const;
 
 function ConnectorMissingSetup({ broker, t }: { broker: string; t: TFunction }) {

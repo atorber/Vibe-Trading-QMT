@@ -102,6 +102,7 @@
     "connectedAccessUnknown": "Connected · Access unknown",
     "missingLongbridgeVariables": "Missing configuration. Configure these variables in agent/.env and recreate the service:",
     "missingEtoroVariables": "Missing configuration. Set these environment variables or create ~/.vibe-trading/etoro.json:",
+    "missingQmtVariables": "Missing configuration. Configure these QMT Bridge variables in agent/.env and recreate the service:",
     "missingEtoroFileHint": "Example file: {\"api_key\": \"YOUR_PUBLIC_API_KEY\", \"user_key\": \"YOUR_USER_KEY\", \"profile\": \"live-readonly\"}. Profiles: etoro-paper-sdk, etoro-live-sdk-readonly, etoro-paper-trade, etoro-live-trade.",
     "missingConnectorVariables": "Missing configuration. Configure connector credentials in ~/.vibe-trading/ or agent/.env, then verify the connection.",
     "pathSeparatedKeyBound": "Demo/real path-separated (shared key pair)",

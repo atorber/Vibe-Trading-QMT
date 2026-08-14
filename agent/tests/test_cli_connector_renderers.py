@@ -150,3 +150,85 @@ def test_connector_check_uses_sdk_diagnostics_without_oauth_rows(capsys) -> None
     assert "OAuth token" not in out
     assert "Configured" not in out
     assert "Capabilities" not in out
+
+
+def test_connector_account_renders_qmt_assets(capsys) -> None:
+    qmt_account = {
+        "status": "ok",
+        "profile_id": "qmt-live-sdk-readonly",
+        "account_id": "755860001037",
+        "assets": [
+            {
+                "account_id": "755860001037",
+                "cash": 100000.5,
+                "available": 80000.0,
+                "market_value": 50000.0,
+                "total_asset": 150000.5,
+                "frozen": 0.0,
+                "currency": "CNY",
+            }
+        ],
+    }
+
+    rc = _legacy._print_connector_account(qmt_account)
+
+    assert rc == _legacy.EXIT_SUCCESS
+    out = capsys.readouterr().out
+    assert "No account summary returned." not in out
+    assert "755860001037" in out
+    assert "CNY" in out
+    assert "150000.5" in out
+    assert "100000.5" in out
+
+
+def test_connector_positions_renders_qmt_qty(capsys) -> None:
+    qmt_positions = {
+        "status": "ok",
+        "profile_id": "qmt-live-sdk-readonly",
+        "positions": [
+            {
+                "account": "755860001037",
+                "symbol": "300285.SZ",
+                "qty": 200,
+                "avg_cost": 12.5,
+                "currency": "CNY",
+            }
+        ],
+    }
+    with patch("src.trading.service.get_positions", return_value=qmt_positions):
+        rc = _legacy.cmd_connector_positions("qmt-live-sdk-readonly")
+
+    assert rc == _legacy.EXIT_SUCCESS
+    out = capsys.readouterr().out
+    assert "300285.SZ" in out
+    assert "200" in out
+    assert "12.5" in out
+    assert "755860001037" in out
+
+
+def test_connector_orders_renders_flat_qmt_schema(capsys) -> None:
+    qmt_orders = {
+        "status": "ok",
+        "profile_id": "qmt-live-sdk-readonly",
+        "open_orders": [
+            {
+                "account": "755860001037",
+                "symbol": "600519.SH",
+                "side": "buy",
+                "qty": 100,
+                "price": 1600.0,
+                "status": "已报",
+                "order_type": 23,
+            }
+        ],
+    }
+    with patch("src.trading.service.get_open_orders", return_value=qmt_orders):
+        rc = _legacy.cmd_connector_orders("qmt-live-sdk-readonly")
+
+    assert rc == _legacy.EXIT_SUCCESS
+    out = capsys.readouterr().out
+    assert "600519.SH" in out
+    assert "buy" in out
+    assert "100" in out
+    assert "1600" in out
+    assert "已报" in out

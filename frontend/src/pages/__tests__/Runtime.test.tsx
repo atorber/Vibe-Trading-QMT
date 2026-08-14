@@ -96,6 +96,36 @@ function makeLongbridgeStatus(
   });
 }
 
+function makeQmtStatus(
+  authOverrides: Partial<LiveBrokerStatus["auth"]> = {},
+): LiveStatus {
+  return makeStatus({
+    brokers: [
+      {
+        auth: {
+          broker: "qmt",
+          oauth_token_present: false,
+          is_live_broker: false,
+          profile_id: "qmt-live-sdk-readonly",
+          transport: "broker_sdk",
+          configured: false,
+          connection_state: "not_configured",
+          error_code: "credentials_missing",
+          ...authOverrides,
+        },
+        runner: {
+          broker: "qmt",
+          alive: false,
+          last_tick: null,
+          last_tick_age_seconds: null,
+        },
+        mandate: null,
+        halted: false,
+      },
+    ],
+  });
+}
+
 function makeEtoroStatus(
   authOverrides: Partial<LiveBrokerStatus["auth"]> = {},
 ): LiveStatus {
@@ -266,6 +296,20 @@ describe("Runtime page", () => {
     expect(await screen.findByText("Not configured")).toBeInTheDocument();
     expect(screen.getByText("ETORO_API_KEY")).toBeInTheDocument();
     expect(screen.getByText("ETORO_USER_KEY")).toBeInTheDocument();
+    expect(screen.queryByText("LONGBRIDGE_APP_KEY")).not.toBeInTheDocument();
+    expect(document.querySelector('input[type="password"]')).not.toBeInTheDocument();
+  });
+
+  it("shows exact missing QMT Bridge variable names without rendering secret inputs", async () => {
+    apiMock.getLiveStatus.mockResolvedValue(makeQmtStatus());
+
+    render(<Runtime />);
+
+    expect(await screen.findByText("Not configured")).toBeInTheDocument();
+    expect(screen.getByText("QMT_BRIDGE_HOST")).toBeInTheDocument();
+    expect(screen.getByText("QMT_BRIDGE_PORT")).toBeInTheDocument();
+    expect(screen.getByText("QMT_BRIDGE_API_KEY")).toBeInTheDocument();
+    expect(screen.getByText("QMT_BRIDGE_ACCOUNT_ID")).toBeInTheDocument();
     expect(screen.queryByText("LONGBRIDGE_APP_KEY")).not.toBeInTheDocument();
     expect(document.querySelector('input[type="password"]')).not.toBeInTheDocument();
   });

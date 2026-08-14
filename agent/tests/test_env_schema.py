@@ -103,6 +103,10 @@ class TestEnvConfigDefaults:
         assert c.data.longbridge_app_key == ""
         assert c.data.longbridge_app_secret == ""
         assert c.data.longbridge_access_token == ""
+        assert c.data.qmt_bridge_host == "127.0.0.1"
+        assert c.data.qmt_bridge_port == 8000
+        assert c.data.qmt_bridge_api_key == ""
+        assert c.data.qmt_bridge_account_id == ""
 
     def test_api_defaults(self) -> None:
         c = EnvConfig()
@@ -233,6 +237,21 @@ class TestEnvConfigOverride:
         assert data.longbridge_app_key == "app-key"
         assert data.longbridge_app_secret == "app-secret"
         assert data.longbridge_access_token == "access-token"
+
+    def test_qmt_bridge_settings_read_from_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("QMT_BRIDGE_HOST", "192.168.1.100")
+        monkeypatch.setenv("QMT_BRIDGE_PORT", "8080")
+        monkeypatch.setenv("QMT_BRIDGE_API_KEY", "secret-key")
+        monkeypatch.setenv("QMT_BRIDGE_ACCOUNT_ID", "12345678")
+
+        data = EnvConfig().data
+
+        assert data.qmt_bridge_host == "192.168.1.100"
+        assert data.qmt_bridge_port == 8080
+        assert data.qmt_bridge_api_key == "secret-key"
+        assert data.qmt_bridge_account_id == "12345678"
 
     def test_env_override_and_reset(
         self, monkeypatch: pytest.MonkeyPatch
