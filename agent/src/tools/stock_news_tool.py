@@ -252,7 +252,8 @@ class StockNewsTool(BaseTool):
         "(title/url/source/published/snippet) under 'articles'. US (.US) and Hong "
         "Kong (.HK) return Yahoo Finance news articles with the same fields. Use "
         "scope 'stock' with a 'code', or scope 'global' (no code) for broad "
-        "China-market finance articles. "
+        "China-market finance articles. Eastmoney/Yahoo-backed and may fail; "
+        "on error, report not retrieved once and continue without retrying. "
         'Example: {"code": "600519.SH", "scope": "stock", "limit": 10}.'
     )
     parameters = {

@@ -107,6 +107,7 @@ class TestEnvConfigDefaults:
         assert c.data.qmt_bridge_port == 8000
         assert c.data.qmt_bridge_api_key == ""
         assert c.data.qmt_bridge_account_id == ""
+        assert c.data.qmt_bridge_account_type == ""
 
     def test_api_defaults(self) -> None:
         c = EnvConfig()
@@ -245,6 +246,7 @@ class TestEnvConfigOverride:
         monkeypatch.setenv("QMT_BRIDGE_PORT", "8080")
         monkeypatch.setenv("QMT_BRIDGE_API_KEY", "secret-key")
         monkeypatch.setenv("QMT_BRIDGE_ACCOUNT_ID", "12345678")
+        monkeypatch.setenv("QMT_BRIDGE_ACCOUNT_TYPE", "CREDIT")
 
         data = EnvConfig().data
 
@@ -252,6 +254,7 @@ class TestEnvConfigOverride:
         assert data.qmt_bridge_port == 8080
         assert data.qmt_bridge_api_key == "secret-key"
         assert data.qmt_bridge_account_id == "12345678"
+        assert data.qmt_bridge_account_type == "CREDIT"
 
     def test_env_override_and_reset(
         self, monkeypatch: pytest.MonkeyPatch

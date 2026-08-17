@@ -211,7 +211,6 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
         </div>
       )}
       {panels}
-      <LiveRuntimeStatus />
       {attachment && (
         <div className="flex items-center gap-1">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 text-primary text-xs font-medium">
@@ -230,7 +229,11 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
         </div>
       )}
       <LiveRuntimeControl />
-      <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-background p-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_8px_24px_-12px_rgba(0,0,0,0.12)] transition-shadow focus-within:ring-2 focus-within:ring-primary/25 dark:bg-card">
+      <div className="rounded-2xl border border-border/60 bg-background p-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_8px_24px_-12px_rgba(0,0,0,0.12)] transition-shadow focus-within:ring-2 focus-within:ring-primary/25 dark:bg-card">
+        <div className="px-1.5 pb-1.5 pt-0.5 empty:hidden">
+          <LiveRuntimeStatus />
+        </div>
+        <div className="flex items-end gap-2">
         <div className="relative" ref={uploadMenuRef}>
           <button
             ref={uploadMenuTriggerRef}
@@ -405,6 +408,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
             <Send className="h-4 w-4" />
           </button>
         )}
+      </div>
       </div>
       <p className="px-1 text-[11px] text-muted-foreground">{t("agent.inputHint")}</p>
     </form>

@@ -840,6 +840,8 @@ class AgentLoop:
                             f"[SYSTEM] You have {remaining} iterations remaining out of "
                             f"{self.max_iterations}. Please wrap up your work. "
                             "Stop calling tools and provide your final answer as plain text. "
+                            "Write the full analysis in that message (headings and tables). "
+                            "The tool-call list is not visible as a report. "
                             "If you have partial results, summarize what you have so far."
                         ),
                     })

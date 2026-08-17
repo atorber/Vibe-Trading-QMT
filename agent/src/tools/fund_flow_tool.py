@@ -170,7 +170,9 @@ class FundFlowTool(BaseTool):
         "ticker, the main / super-large / large / medium / small-order net inflow "
         "(in CNY), as daily history or the current session's per-minute line. Use "
         "this for one or more named stocks to gauge whether large/main-force money "
-        "is flowing into or out of that specific symbol. NOT market-wide aggregate "
+        "is flowing into or out of that specific symbol. Eastmoney-backed and may "
+        "fail (throttle/empty); on ok:false, report not retrieved and continue — "
+        "do not retry the same codes. NOT market-wide aggregate "
         "flow (for Stock-Connect 北向 use get_northbound_flow). Markets: A-share "
         "(.SH/.SZ/.BJ), Hong Kong (.HK) and US (.US). Example: "
         '{"codes": ["600519.SH", "00700.HK"], "period": "daily", "days": 30}.'

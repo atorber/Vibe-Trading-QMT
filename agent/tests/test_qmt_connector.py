@@ -52,6 +52,7 @@ def test_qmt_build_config_reads_env(monkeypatch) -> None:
     monkeypatch.setenv("QMT_BRIDGE_PORT", "8080")
     monkeypatch.setenv("QMT_BRIDGE_API_KEY", "bridge-key")
     monkeypatch.setenv("QMT_BRIDGE_ACCOUNT_ID", "acc-9")
+    monkeypatch.setenv("QMT_BRIDGE_ACCOUNT_TYPE", "CREDIT")
     reset_env_config()
 
     profile = profiles.profile_by_id("qmt-live-sdk-readonly")
@@ -61,6 +62,7 @@ def test_qmt_build_config_reads_env(monkeypatch) -> None:
     assert cfg.port == 8080
     assert cfg.api_key == "bridge-key"
     assert cfg.account_id == "acc-9"
+    assert cfg.account_type == "CREDIT"
     assert cfg.profile == "live-readonly"
     assert cfg.environment == "live"
     assert cfg.base_url == "http://192.168.1.50:8080"
@@ -94,7 +96,7 @@ def test_qmt_read_write_classification_registered() -> None:
 
 
 def test_qmt_service_dispatches_positions(monkeypatch) -> None:
-    def fake_request(config, method, path, *, params=None, require_api_key):
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
         assert method == "GET"
         assert path == "/api/trading/positions"
         assert require_api_key is True
@@ -135,7 +137,7 @@ def test_qmt_service_dispatches_positions(monkeypatch) -> None:
 
 
 def test_qmt_service_dispatches_quote(monkeypatch) -> None:
-    def fake_request(config, method, path, *, params=None, require_api_key):
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
         assert path == "/api/market/full_tick"
         assert require_api_key is False
         assert params == {"stocks": "000001.SZ"}
@@ -179,7 +181,7 @@ def test_qmt_check_connection_missing_api_key(monkeypatch) -> None:
 def test_qmt_check_status_emits_runtime_envelope(monkeypatch) -> None:
     monkeypatch.setattr(qmt, "tcp_port_open", lambda host, port, timeout=1.5: True)
 
-    def fake_request(config, method, path, *, params=None, require_api_key):
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
         if path == "/api/meta/health":
             return {"status": "ok", "trading": {"enabled": True, "connected": True}}
         if path == "/api/trading/asset":
@@ -199,10 +201,11 @@ def test_qmt_check_status_emits_runtime_envelope(monkeypatch) -> None:
     assert result["sdk_installed"] is True
     assert result["last_checked_at"]
     assert result["account"]["total_asset"] == 2.0
+    assert result["trading"]["connected"] is True
 
 
 def test_qmt_account_snapshot_exposes_shared_account_fields(monkeypatch) -> None:
-    def fake_request(config, method, path, *, params=None, require_api_key):
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
         assert path == "/api/trading/asset"
         assert params == {"account_id": "755860001037"}
         return {
@@ -309,3 +312,118 @@ def test_qmt_request_sends_x_api_key(monkeypatch) -> None:
     assert seen["method"] == "GET"
     assert seen["url"] == "http://192.168.1.1:8000/api/trading/asset?account_id=9"
     assert seen["headers"]["X-API-Key"] == "secret"
+
+
+def test_qmt_history_uses_market_data_ex(monkeypatch) -> None:
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
+        assert path == "/api/market/market_data_ex"
+        assert params["stocks"] == "000001.SZ"
+        assert params["period"] == "60m"
+        assert params["count"] == 20
+        return {
+            "data": {
+                "000001.SZ": [
+                    {"time": "20260105", "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.1, "volume": 100}
+                ]
+            }
+        }
+
+    monkeypatch.setattr(qmt, "_request", fake_request)
+    result = service.get_history(
+        "000001.SZ", "qmt-paper-sdk", period="1h", limit=20, api_key="unused"
+    )
+    assert result["status"] == "ok"
+    assert result["bars"][0]["close"] == 10.1
+
+
+def test_qmt_orders_use_bridge_orders_and_trades(monkeypatch) -> None:
+    seen: list[tuple[str, dict]] = []
+
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
+        seen.append((path, dict(params or {})))
+        if path == "/api/trading/orders" and (params or {}).get("cancelable_only") == "true":
+            return {"data": []}
+        if path == "/api/trading/orders":
+            return {
+                "data": [
+                    {
+                        "stock_code": "300285.SZ",
+                        "order_id": 11,
+                        "order_type": 23,
+                        "order_volume": 1000,
+                        "traded_volume": 1000,
+                        "price": 12.3,
+                        "order_status": 56,
+                    }
+                ]
+            }
+        if path == "/api/trading/trades":
+            return {
+                "data": [
+                    {
+                        "stock_code": "300285.SZ",
+                        "order_id": 11,
+                        "traded_id": "t1",
+                        "order_type": 23,
+                        "traded_volume": 1000,
+                        "traded_price": 12.3,
+                        "traded_time": "20260814",
+                    }
+                ]
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(qmt, "_request", fake_request)
+    result = service.get_open_orders("qmt-live-sdk-readonly", api_key="k", account_id="A1")
+    assert [path for path, _ in seen] == [
+        "/api/trading/orders",
+        "/api/trading/orders",
+        "/api/trading/trades",
+    ]
+    assert seen[0][1]["cancelable_only"] == "true"
+    assert "cancelable_only" not in seen[1][1]
+    assert result["open_orders"] == []
+    assert result["orders"][0]["symbol"] == "300285.SZ"
+    assert result["orders"][0]["filled_qty"] == 1000
+    assert result["executions"][0]["qty"] == 1000
+    assert result["executions"][0]["side"] == "buy"
+    assert result["source"]["executions"] == "GET /api/trading/trades"
+
+
+def test_qmt_orders_fetch_history_when_start_time_set(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
+        seen.append(path)
+        if path == "/api/trading/history_trades":
+            assert params["start_time"] == "20260810"
+            assert params["end_time"] == "20260813"
+            return {
+                "data": [
+                    {
+                        "stock_code": "300476.SZ",
+                        "order_type": 24,
+                        "traded_volume": 500,
+                        "traded_price": 20.1,
+                        "traded_time": "20260811",
+                    }
+                ]
+            }
+        if path == "/api/trading/history_orders":
+            return {"export_code": {"error": {"errorMsg": "unsupported data type"}}, "error": "unsupported data type", "data": []}
+        return {"data": []}
+
+    monkeypatch.setattr(qmt, "_request", fake_request)
+    result = service.get_open_orders(
+        "qmt-live-sdk-readonly",
+        api_key="k",
+        account_id="A1",
+        start_time="2026-08-10",
+        end_time="20260813",
+    )
+    assert "/api/trading/history_trades" in seen
+    assert "/api/trading/history_orders" in seen
+    assert result["history_executions"][0]["symbol"] == "300476.SZ"
+    assert result["history_executions"][0]["side"] == "sell"
+    assert result["history_orders"] == []
+    assert "unsupported" in str(result.get("history_orders_error") or "").lower()

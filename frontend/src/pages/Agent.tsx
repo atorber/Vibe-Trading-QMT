@@ -268,7 +268,7 @@ export function Agent() {
   const isNearBottom = useCallback(() => {
     const el = listRef.current;
     if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 160;
   }, []);
 
   const rafRef = useRef(0);
@@ -418,6 +418,7 @@ export function Agent() {
     const previous = previousStatusRef.current;
     previousStatusRef.current = status;
     if (previous === "streaming" && status !== "streaming") {
+      forceScrollToBottom(false);
       requestAnimationFrame(() => {
         const selection = window.getSelection();
         if (selection && !selection.isCollapsed) return;
@@ -432,7 +433,7 @@ export function Agent() {
         composerRef.current?.focus();
       });
     }
-  }, [status]);
+  }, [forceScrollToBottom, status]);
 
   /* Track scroll position to show/hide scroll button */
   useEffect(() => {
@@ -1617,7 +1618,7 @@ export function Agent() {
       <div
         ref={listRef}
         data-streaming={status === "streaming" ? "true" : undefined}
-        className="chat-scroll-container flex-1 overflow-auto p-6 relative"
+        className="chat-scroll-container flex-1 overflow-auto p-6 pb-12 relative"
       >
         <div
           className={[
@@ -1754,7 +1755,7 @@ export function Agent() {
 
       <div
         data-agent-composer
-        className="border-t p-4 bg-background/80 backdrop-blur-sm"
+        className="border-t p-4 bg-background"
       >
         <div className="max-w-3xl mx-auto">
           <LiveRuntimePanel

@@ -16,6 +16,7 @@ def test_market_data_tool_exposes_longbridge_source():
 
     source_schema = MarketDataTool.parameters["properties"]["source"]
     assert "longbridge" in source_schema["enum"]
+    assert "qmt" in source_schema["enum"]
 
 
 def test_market_data_json_accepts_explicit_longbridge_source():

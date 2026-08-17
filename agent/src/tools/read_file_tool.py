@@ -19,7 +19,11 @@ class ReadFileTool(BaseTool):
     """Read file contents with optional line limit."""
 
     name = "read_file"
-    description = "Read a file from the workspace. Returns file contents with optional line limit."
+    description = (
+        "Read a file from the workspace. Returns file contents with optional line limit. "
+        "Do not use this to re-read OHLCV: get_market_data JSON is already evidence. "
+        "Paths under data/raw/ only exist if you wrote them this session."
+    )
     parameters = {
         "type": "object",
         "properties": {

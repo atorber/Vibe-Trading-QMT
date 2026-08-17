@@ -33,9 +33,9 @@ from src.market_data import (
 @pytest.mark.parametrize(
     "code,expected",
     [
-        ("600519.SH", "tencent"),
-        ("000001.SZ", "tencent"),
-        ("430139.BJ", "tencent"),
+        ("600519.SH", "qmt"),
+        ("000001.SZ", "qmt"),
+        ("430139.BJ", "qmt"),
         ("AAPL.US", "yahoo"),
         ("700.HK", "tencent"),
         ("00700.HK", "tencent"),
@@ -435,3 +435,33 @@ def test_fetch_json_rejects_nan_via_allow_nan_false() -> None:
     )
     parsed = json.loads(payload)
     assert parsed["A.US"][0]["close"] is None
+
+
+def test_qmt_loader_fetches_bridge_bars(monkeypatch) -> None:
+    from backtest.loaders.qmt_loader import DataLoader
+    from src.trading.connectors.qmt import sdk as qmt
+
+    def fake_get(config, path, *, params=None, require_api_key, timeout=None):
+        assert path == "/api/market/market_data_ex"
+        assert params["stocks"] == "000001.SZ"
+        assert params["period"] == "1d"
+        assert params["start_time"] == "20260801"
+        return {
+            "data": {
+                "000001.SZ": [
+                    {
+                        "time": "2026-08-14",
+                        "open": 10.0,
+                        "high": 11.0,
+                        "low": 9.5,
+                        "close": 10.5,
+                        "volume": 1000,
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(qmt, "_get", fake_get)
+    out = DataLoader().fetch(["000001.SZ"], "2026-08-01", "2026-08-14", interval="1D")
+    assert float(out["000001.SZ"].iloc[0]["close"]) == 10.5
+

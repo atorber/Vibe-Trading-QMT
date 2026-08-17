@@ -108,6 +108,14 @@ class TestOutputPrinciplesArePresent:
         assert positions == sorted(positions)
 
 
+class TestVisibleFinalAnswerPrompt:
+    def test_visible_answer_section_is_in_the_prompt(self) -> None:
+        prompt = _rendered_prompt()
+        assert "## Visible final answer" in prompt
+        assert "tool-call list is a progress log" in prompt
+        assert "data/raw" in prompt
+
+
 class TestOutputPrinciplesCannotBeOverriddenBySession:
     """A single session must not be able to soften the principles."""
 

@@ -1056,6 +1056,28 @@ def test_price_validation_ignores_symbol_date_and_quantity_digits(tmp_path: Path
         assert result.valid is True, (draft, result.issues)
 
 
+def test_placeholder_closer_is_rejected_when_bars_were_fetched(tmp_path: Path) -> None:
+    ledger = _screened_ledger(tmp_path)
+    result = ledger.validate_final_answer(
+        "以上就是今日交易的完整深度分析。需要我继续往哪个方向深挖？"
+    )
+    assert result.valid is False
+    assert any(issue["code"] == "placeholder_analysis" for issue in result.issues)
+
+
+def test_structured_analysis_with_closer_is_accepted(tmp_path: Path) -> None:
+    ledger = _screened_ledger(tmp_path)
+    draft = (
+        "## 000543.SZ\n\n"
+        "000543.SZ 截至 8 月 3 日收盘价 8.20 CNY（source: tencent）。\n\n"
+        "| 项目 | 值 |\n|---|---|\n| 收盘 | 8.20 |\n\n"
+        + ("资金流向 not retrieved。板块与日K如上。\n" * 20)
+        + "以上就是今日交易的完整深度分析。"
+    )
+    result = ledger.validate_final_answer(draft)
+    assert result.valid is True, result.issues
+
+
 def test_price_validation_still_rejects_a_quote_outside_observed_range(
     tmp_path: Path,
 ) -> None:

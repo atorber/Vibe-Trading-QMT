@@ -37,6 +37,7 @@ VALID_SOURCES: set[str] = {
     "yfinance",
     "akshare",
     "baostock",
+    "qmt",
     "tencent",
     "mootdx",
     "ccxt",
@@ -87,6 +88,7 @@ def _ensure_registered() -> None:
         "backtest.loaders.yfinance_loader",
         "backtest.loaders.akshare_loader",
         "backtest.loaders.baostock_loader",
+        "backtest.loaders.qmt_loader",
         "backtest.loaders.tencent_loader",
         "backtest.loaders.mootdx_loader",
         "backtest.loaders.ccxt_loader",
@@ -134,7 +136,7 @@ _NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local", "qveris"})  #
 # that must be politely throttled; Finnhub/AlphaVantage/Tiingo/FMP are key-gated
 # REST fallbacks placed deeper in the chain.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "a_share":   ["tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local"],
+    "a_share":   ["qmt", "tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local"],
     "us_equity": ["yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp", "finnhub", "alphavantage", "longbridge", "akshare", "local"],
     # HK: tencent leads (no observed IP ban); akshare (Eastmoney-backed)
     # precedes the Yahoo-SDK family, which is blocked from mainland IPs;

@@ -448,6 +448,15 @@ def _live_broker_sdk_connectors() -> List[str]:
     return sorted(result)
 
 
+def _ordered_live_status_brokers() -> List[str]:
+    """Return live-status broker keys with QMT pinned first."""
+    brokers = sorted(set(_known_live_brokers()) | set(_live_broker_sdk_connectors()))
+    preferred = "qmt"
+    if preferred not in brokers:
+        return brokers
+    return [preferred, *[name for name in brokers if name != preferred]]
+
+
 def _oauth_token_present(broker: str) -> bool:
     """Return whether an OAuth token cache exists for a broker (C2 auth state)."""
     try:
@@ -730,7 +739,7 @@ def register_live_routes(
         """
         from src.live.halt import halt_flag_set
 
-        all_brokers = sorted(set(_known_live_brokers()) | set(_live_broker_sdk_connectors()))
+        all_brokers = _ordered_live_status_brokers()
 
         if broker is not None:
             target = broker.strip().lower()

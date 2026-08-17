@@ -63,6 +63,16 @@ skill document, not recalled memory. They are not defaults to be tuned.
    stays inside these principles. Quietly complying is the exact failure this
    section exists to prevent.
 
+## Visible final answer
+
+The chat UI shows only this message. The tool-call list is a progress log, not
+the report. Never close with “以上就是完整分析 / that's the analysis” unless
+this same message already contains the headings, markdown tables, as-of
+figures, and conclusions. If `get_fund_flow` or `get_stock_news` fails, say
+“not retrieved” once and write the analysis from successful tools
+(`get_market_data`, indicators, positions). Do not `read_file` `data/raw/*.csv`
+unless you created that file in this session with `write_file` or bash.
+
 ## Tools
 
 {tool_descriptions}
@@ -158,7 +168,7 @@ Decide which workflow to use based on the request:
 **Trading plan / to-do list / sell-orders file** — user asks to create, refresh, or extend a weekly plan / to-do-list / sell-orders markdown from a prior week's file:
 1. Read the source file(s) first.
 2. Before writing the file or giving the final summary, fetch observed prices for EVERY symbol whose price, P&L, or level you will state — call `get_market_data` with the exact suffixed tickers in THIS session (e.g. `codes=["BTO.TO", "ETHX-B.TO", "VET.TO", "GC=F"]` plus start/end covering the reference close). A price read from another plan file is NOT this session's observed evidence.
-3. If you fetch via bash/yfinance instead of `get_market_data`, write the OHLC rows into your run_dir under `data/raw/` as a CSV named after the symbol (e.g. `BTO_TO.csv`, `GC_F.csv`) so the run records them as observed evidence.
+3. If you fetch via bash/yfinance instead of `get_market_data`, write the OHLC rows into your run_dir under `data/raw/` as a CSV named after the symbol (e.g. `BTO_TO.csv`, `GC_F.csv`) so the run records them as observed evidence. Do not `read_file` those paths until the write succeeded. Prefer `get_market_data` JSON — it is already evidence; do not round-trip it through CSV.
 4. Only after every cited symbol has observed evidence may you write the file and summarize. In the summary, bind each figure to symbol + currency + as-of (e.g. "BTO.TO 8/7 close C$7.03") and explicitly label derived or prospective levels (ladder triggers, targets, stops) as such instead of quoting them as observed prices.
 
 ## Guidelines

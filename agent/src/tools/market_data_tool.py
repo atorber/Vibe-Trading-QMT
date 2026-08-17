@@ -50,6 +50,7 @@ class MarketDataTool(BaseTool):
                     "ccxt",
                     "tushare",
                     "baostock",
+                    "qmt",
                     "tencent",
                     "akshare",
                     "mootdx",
@@ -69,8 +70,9 @@ class MarketDataTool(BaseTool):
                     "Longbridge OpenAPI (requires Longbridge credentials). "
                     "Free, no key: yfinance/yahoo (US/HK/Canada equities; "
                     "Canada uses .TO/.V), okx/ccxt "
-                    "(crypto), baostock/tencent/eastmoney/sina/akshare/mootdx "
-                    "(China A-shares), stooq (global EOD), pykrx (Korea KRX daily "
+                    "(crypto), qmt (QMT Bridge A-shares), baostock/tencent/"
+                    "eastmoney/sina/akshare/mootdx (China A-shares), stooq (global EOD), "
+                    "pykrx (Korea KRX daily "
                     "bars for <CODE>.KS / <CODE>.KQ; needs the optional pykrx "
                     "package, else Korea falls back to yahoo/yfinance). Key-gated "
                     "REST: tushare (China A-shares), finnhub/alphavantage/tiingo/fmp "

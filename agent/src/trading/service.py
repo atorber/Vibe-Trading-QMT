@@ -96,10 +96,14 @@ def get_open_orders(
     profile_id: str | None = None,
     *,
     include_executions: bool = False,
+    start_time: str = "",
+    end_time: str = "",
     **overrides: Any,
 ) -> dict[str, Any]:
     """Read open orders for a connector profile."""
     profile = profile_by_id(profile_id)
+    start_time = str(overrides.pop("start_time", start_time) or "")
+    end_time = str(overrides.pop("end_time", end_time) or "")
     if profile.transport == "local_tws":
         from src.trading.connectors.ibkr.local import get_open_orders as _get_open_orders
 
@@ -109,11 +113,13 @@ def get_open_orders(
         )
     if profile.transport == "broker_sdk":
         module = _sdk_module(profile.connector)
+        extra: dict[str, Any] = {"include_executions": include_executions}
+        if profile.connector == "qmt":
+            extra["start_time"] = start_time
+            extra["end_time"] = end_time
         return _with_profile(
             profile,
-            module.get_open_orders(
-                module.build_config(profile.config, overrides), include_executions=include_executions
-            ),
+            module.get_open_orders(module.build_config(profile.config, overrides), **extra),
         )
     return _call_remote(profile, "orders", _account_arg(overrides))
 

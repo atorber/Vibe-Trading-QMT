@@ -1277,10 +1277,15 @@ def trading_orders(
     client_id: int | None = None,
     account: str | None = None,
     include_executions: bool = False,
+    start_time: str | None = None,
+    end_time: str | None = None,
 ) -> str:
-    """Read open orders from the selected trading connector profile.
+    """Read today's orders from the selected trading connector.
 
     Read-only: this tool does not place, cancel, modify, or replace orders.
+    QMT always includes GET /api/trading/orders and GET /api/trading/trades.
+    Pass start_time/end_time (YYYYMMDD) for historical fills via
+    GET /api/trading/history_trades. Do not infer fills from available_qty.
 
     Args:
         connection: Optional profile id. Defaults to the selected profile.
@@ -1288,10 +1293,16 @@ def trading_orders(
         port: Optional local socket port override.
         client_id: Optional local client id override.
         account: Optional account code filter.
-        include_executions: Include recent executions when available.
+        include_executions: Include recent executions when available. QMT always returns today's fills.
+        start_time: Optional history start date YYYYMMDD.
+        end_time: Optional history end date YYYYMMDD.
     """
     params = _trading_common_args(connection=connection, host=host, port=port, client_id=client_id, account=account)
     params["include_executions"] = include_executions
+    if start_time:
+        params["start_time"] = start_time
+    if end_time:
+        params["end_time"] = end_time
     registry = _get_registry()
     return registry.execute("trading_orders", params)
 
@@ -1558,6 +1569,7 @@ def get_market_data(
     - "okx": cryptocurrency (free, e.g. BTC-USDT, ETH-USDT)
     - "tushare": China A-shares (requires TUSHARE_TOKEN, e.g. 000001.SZ)
     - "baostock": China A-shares via TCP protocol, bypasses HTTP CDN blocks (e.g. 000001.SZ, 601595.SH)
+    - "qmt": China A-shares via QMT Bridge ``/api/market/market_data_ex``
     - "tencent": China A-shares via Tencent Finance API (e.g. 000001.SZ, 601595.SH)
     - "akshare": A-shares, US, HK, futures, forex (free, e.g. 000001.SZ, AAPL.US)
     - "ccxt": crypto from 100+ exchanges (free, e.g. BTC/USDT)

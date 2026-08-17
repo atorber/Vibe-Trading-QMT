@@ -119,6 +119,10 @@ class TestBarsPerYear:
         assert calc_bars_per_year("1D", "tencent") == 252
         assert calc_bars_per_year("1m", "tencent") == 252 * 240
 
+    def test_ashare_qmt(self) -> None:
+        assert calc_bars_per_year("1D", "qmt") == 252
+        assert calc_bars_per_year("1m", "qmt") == 252 * 240
+
     def test_ashare_eastmoney(self) -> None:
         assert calc_bars_per_year("1D", "eastmoney") == 252
         assert calc_bars_per_year("1m", "eastmoney") == 252 * 240

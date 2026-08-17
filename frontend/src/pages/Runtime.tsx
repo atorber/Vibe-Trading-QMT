@@ -161,7 +161,7 @@ export function Runtime() {
               </section>
             ) : (
               <section className="grid gap-4">
-                {status.brokers.map((broker) => (
+                {sortBrokersForRuntime(status.brokers).map((broker) => (
                   <BrokerRuntimeCard
                     key={broker.auth.profile_id || broker.auth.broker}
                     broker={broker}
@@ -522,6 +522,10 @@ function StatusPill({ label, tone }: { label: string; tone: "success" | "danger"
       {label}
     </span>
   );
+}
+
+function sortBrokersForRuntime(brokers: LiveBrokerStatus[]): LiveBrokerStatus[] {
+  return [...brokers].sort((left, right) => Number(left.auth.broker !== "qmt") - Number(right.auth.broker !== "qmt"));
 }
 
 function summarizeRuntime(status: LiveStatus | null) {

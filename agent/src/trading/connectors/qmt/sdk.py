@@ -35,20 +35,18 @@ PROFILE_ENVIRONMENTS = {
     "live": "live",
 }
 
-#: Canonical period token → QMT Bridge period string.
+#: Canonical period token → QMT Bridge period (tick/1m/5m/15m/30m/60m/1d).
 _PERIOD_MAP = {
+    "tick": "tick",
     "1m": "1m",
     "5m": "5m",
     "15m": "15m",
     "30m": "30m",
-    "1h": "1h",
-    "1H": "1h",
+    "60m": "60m",
+    "1h": "60m",
+    "1H": "60m",
     "1d": "1d",
     "1D": "1d",
-    "1w": "1w",
-    "1W": "1w",
-    "1M": "1mon",
-    "1mon": "1mon",
 }
 
 _ORDER_TYPE_SIDE = {
@@ -86,6 +84,7 @@ class QmtConfig:
         port: Bridge HTTP port (default 8000).
         api_key: API key for ``/api/trading/*`` (header ``X-API-Key``).
         account_id: Trading account id matching ``qmt-server --account-id``.
+        account_type: ``STOCK`` or ``CREDIT`` for Bridge ``account_type``.
         profile: ``paper``, ``live-readonly`` or ``live`` (operator-declared).
         timeout: Network timeout in seconds.
         readonly: Always true for built-in profiles.
@@ -95,6 +94,7 @@ class QmtConfig:
     port: int = DEFAULT_PORT
     api_key: str = ""
     account_id: str = ""
+    account_type: str = ""
     profile: str = "live-readonly"
     timeout: float = 15.0
     readonly: bool = True
@@ -117,6 +117,7 @@ class QmtConfig:
             port=int(payload.get("port") or DEFAULT_PORT),
             api_key=str(payload.get("api_key") or "").strip(),
             account_id=str(payload.get("account_id") or "").strip(),
+            account_type=str(payload.get("account_type") or "").strip().upper(),
             profile=profile,
             timeout=float(payload.get("timeout") or 15.0),
             readonly=bool(payload.get("readonly", True)),
@@ -145,7 +146,7 @@ class QmtConfig:
         return f"http://{self.host}:{int(self.port)}"
 
 
-_OVERRIDE_KEYS = ("host", "port", "api_key", "account_id", "profile", "timeout")
+_OVERRIDE_KEYS = ("host", "port", "api_key", "account_id", "account_type", "profile", "timeout")
 
 
 def _normalized_overrides(kwargs: Mapping[str, Any]) -> dict[str, Any]:
@@ -168,6 +169,7 @@ def _environment_values() -> dict[str, Any]:
         "port": int(data.qmt_bridge_port or DEFAULT_PORT),
         "api_key": str(data.qmt_bridge_api_key or "").strip(),
         "account_id": str(data.qmt_bridge_account_id or "").strip(),
+        "account_type": str(data.qmt_bridge_account_type or "").strip(),
     }
 
 
@@ -248,6 +250,15 @@ def check_status(config: QmtConfig | None = None) -> dict[str, Any]:
         )
 
     report["health"] = _mapping_or_raw(health)
+    trading = health.get("trading") if isinstance(health, Mapping) else None
+    if isinstance(trading, Mapping):
+        report["trading"] = dict(trading)
+        if trading.get("enabled") and trading.get("connected") is False:
+            return _status_error(
+                report,
+                "broker_error",
+                str(trading.get("error") or "QMT Bridge trading module is not connected."),
+            )
 
     try:
         snapshot = get_account_snapshot(cfg)
@@ -327,26 +338,108 @@ def get_positions(config: QmtConfig | None = None) -> dict[str, Any]:
 
 
 def get_open_orders(
-    config: QmtConfig | None = None, *, include_executions: bool = False
+    config: QmtConfig | None = None,
+    *,
+    include_executions: bool = False,
+    start_time: str = "",
+    end_time: str = "",
 ) -> dict[str, Any]:
-    """Fetch today's orders and, optionally, trades."""
+    """Fetch QMT session orders/fills, plus optional history via export/query.
+
+    Always calls today's ``/api/trading/orders`` and ``/api/trading/trades``.
+    When ``start_time`` is set, also calls ``/api/trading/history_trades`` and
+    ``/api/trading/history_orders`` (``export_data`` + ``query_data``).
+    """
     cfg = config or load_config()
-    params = _account_params(cfg)
-    payload = _get(cfg, "/api/trading/orders", params=params, require_api_key=True)
-    rows = _extract_items(payload, preferred_keys=("data", "orders", "result"))
+    account = _account_params(cfg)
+    open_payload = _get(
+        cfg,
+        "/api/trading/orders",
+        params={**account, "cancelable_only": "true"},
+        require_api_key=True,
+    )
+    session_payload = _get(
+        cfg,
+        "/api/trading/orders",
+        params=account,
+        require_api_key=True,
+    )
+    trades_payload = _get(
+        cfg, "/api/trading/trades", params=account, require_api_key=True
+    )
+    open_rows = _extract_items(open_payload, preferred_keys=("data", "orders", "result"))
+    session_rows = _extract_items(
+        session_payload, preferred_keys=("data", "orders", "result")
+    )
+    trade_rows = _extract_items(
+        trades_payload, preferred_keys=("data", "trades", "result")
+    )
+    source = {
+        "open_orders": "GET /api/trading/orders?cancelable_only=true",
+        "orders": "GET /api/trading/orders",
+        "executions": "GET /api/trading/trades",
+    }
     result: dict[str, Any] = {
         "status": "ok",
         "profile": cfg.profile,
         "paper_guard": PAPER_GUARD,
         "account_id": cfg.account_id,
-        "open_orders": [_order_to_dict(row, account_id=cfg.account_id) for row in rows],
+        "source": source,
+        "open_orders": [_order_to_dict(row, account_id=cfg.account_id) for row in open_rows],
+        "orders": [_order_to_dict(row, account_id=cfg.account_id) for row in session_rows],
+        "executions": [_trade_to_dict(row) for row in trade_rows],
+        "include_executions": True,
     }
-    if include_executions:
-        trades_payload = _get(cfg, "/api/trading/trades", params=params, require_api_key=True)
-        trade_rows = _extract_items(
-            trades_payload, preferred_keys=("data", "trades", "result")
+    history_start = _ymd(start_time)
+    history_end = _ymd(end_time)
+    if history_start:
+        history_params = {**account, "start_time": history_start, "end_time": history_end}
+        trades_hist = _get(
+            cfg,
+            "/api/trading/history_trades",
+            params=history_params,
+            require_api_key=True,
+            timeout=max(cfg.timeout, 60.0),
         )
-        result["executions"] = [_trade_to_dict(row) for row in trade_rows]
+        result["history_start"] = history_start
+        result["history_end"] = history_end
+        if isinstance(trades_hist, Mapping) and not history_end:
+            result["history_end"] = str(trades_hist.get("end_time") or "")
+        hist_error = _bridge_error_message(trades_hist)
+        hist_rows = [
+            row
+            for row in _extract_items(trades_hist, preferred_keys=("data", "trades", "result"))
+            if not _is_bridge_error_row(row)
+        ]
+        result["history_executions"] = [_trade_to_dict(row) for row in hist_rows]
+        source["history_executions"] = "GET /api/trading/history_trades"
+        if hist_error:
+            result["history_executions_error"] = hist_error
+        try:
+            orders_hist = _get(
+                cfg,
+                "/api/trading/history_orders",
+                params=history_params,
+                require_api_key=True,
+                timeout=max(cfg.timeout, 60.0),
+            )
+            order_error = _bridge_error_message(orders_hist)
+            if order_error:
+                result["history_orders"] = []
+                result["history_orders_error"] = order_error
+            else:
+                result["history_orders"] = [
+                    _order_to_dict(row, account_id=cfg.account_id)
+                    for row in _extract_items(
+                        orders_hist, preferred_keys=("data", "orders", "result")
+                    )
+                    if not _is_bridge_error_row(row)
+                ]
+            source["history_orders"] = "GET /api/trading/history_orders"
+        except QmtAPIError as exc:
+            result["history_orders"] = []
+            result["history_orders_error"] = str(exc)
+    _ = include_executions
     return result
 
 
@@ -372,22 +465,23 @@ def get_historical_bars(
     limit: int = 90,
     **_: Any,
 ) -> dict[str, Any]:
-    """Fetch historical bars via ``GET /api/history``."""
+    """Fetch historical bars via ``GET /api/market/market_data_ex``."""
     cfg = config or load_config()
     code = symbol.strip().upper()
     bridge_period = _PERIOD_MAP.get(period.strip(), period.strip() or "1d")
     payload = _get(
         cfg,
-        "/api/history",
+        "/api/market/market_data_ex",
         params={
-            "stock": code,
+            "stocks": code,
             "period": bridge_period,
             "count": int(limit),
-            "fields": "open,high,low,close,volume",
+            "dividend_type": "none",
+            "fill_data": "true",
         },
         require_api_key=False,
     )
-    bars = [_bar_to_dict(row) for row in _bars_from_payload(payload)]
+    bars = [_bar_to_dict(row) for row in _bars_from_payload(payload, symbol=code)]
     return {
         "status": "ok",
         "symbol": code,
@@ -443,9 +537,36 @@ def cancel_order(
 
 
 def _account_params(cfg: QmtConfig) -> dict[str, str]:
+    params: dict[str, str] = {}
     if cfg.account_id:
-        return {"account_id": cfg.account_id}
-    return {}
+        params["account_id"] = cfg.account_id
+    if cfg.account_type in {"STOCK", "CREDIT"}:
+        params["account_type"] = cfg.account_type
+    return params
+
+
+def _ymd(value: str) -> str:
+    raw = str(value or "").strip().replace("-", "").replace("/", "")
+    if not raw:
+        return ""
+    if len(raw) != 8 or not raw.isdigit():
+        raise QmtConfigError("QMT history dates must be YYYYMMDD.")
+    return raw
+
+
+def _is_bridge_error_row(row: Any) -> bool:
+    return isinstance(row, Mapping) and "error" in row and "stock_code" not in row and "symbol" not in row
+
+
+def _bridge_error_message(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    err = payload.get("error")
+    if isinstance(err, Mapping):
+        return str(err.get("errorMsg") or err.get("message") or err)
+    if isinstance(err, str) and err.strip():
+        return err
+    return None
 
 
 def _get(
@@ -454,9 +575,17 @@ def _get(
     *,
     params: Mapping[str, Any] | None = None,
     require_api_key: bool,
+    timeout: float | None = None,
 ) -> Any:
     """Perform a read-only GET against the QMT Bridge."""
-    return _request(config, "GET", path, params=params, require_api_key=require_api_key)
+    return _request(
+        config,
+        "GET",
+        path,
+        params=params,
+        require_api_key=require_api_key,
+        timeout=timeout,
+    )
 
 
 def _request(
@@ -466,6 +595,7 @@ def _request(
     *,
     params: Mapping[str, Any] | None = None,
     require_api_key: bool,
+    timeout: float | None = None,
 ) -> Any:
     """Run an HTTP request and normalize Bridge failure modes."""
     if require_api_key and not config.api_key:
@@ -488,13 +618,25 @@ def _request(
             method.upper(),
             url,
             headers=headers,
-            timeout=config.timeout,
+            timeout=timeout if timeout is not None else config.timeout,
         )
     except requests.RequestException as exc:
         raise QmtAPIError(f"QMT Bridge request failed: {exc}") from exc
 
     if response.status_code in (401, 403):
         raise QmtAPIError("QMT Bridge authentication failed: check QMT_BRIDGE_API_KEY.")
+    if response.status_code == 504:
+        raise QmtAPIError(
+            f"QMT Bridge market request timed out: {_error_message(response)}"
+        )
+    if response.status_code == 503:
+        raise QmtAPIError(
+            f"QMT Bridge xtdata lock wait timed out: {_error_message(response)}"
+        )
+    if response.status_code == 502:
+        raise QmtAPIError(
+            f"QMT Bridge upstream failed: {_error_message(response)}"
+        )
     if response.status_code >= 400:
         raise QmtAPIError(
             f"QMT Bridge returned HTTP {response.status_code}: {_error_message(response)}"
@@ -717,6 +859,8 @@ def _order_to_dict(row: Mapping[str, Any], *, account_id: str = "") -> dict[str,
         "status": status,
         "order_status": status,
         "order_type": order_type,
+        "order_time": _first(row, ("order_time", "time")),
+        "order_remark": _first(row, ("order_remark", "remark")),
         "contract": {"symbol": symbol, "local_symbol": symbol},
         "order": {
             "account": account_id or None,
@@ -730,13 +874,20 @@ def _order_to_dict(row: Mapping[str, Any], *, account_id: str = "") -> dict[str,
 
 def _trade_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     symbol = str(_first(row, ("stock_code", "symbol", "ticker", "code"), "") or "").upper()
+    qty = _num(_first(row, ("traded_volume", "volume", "qty", "quantity")))
+    price = _num(_first(row, ("traded_price", "price")))
     return {
-        "trade_id": _first(row, ("trade_id", "traded_id", "exec_id", "id")),
+        "trade_id": _first(row, ("traded_id", "trade_id", "exec_id", "id")),
         "order_id": _first(row, ("order_id", "orderId")),
+        "order_sysid": _first(row, ("order_sysid", "sysid")),
         "symbol": symbol,
-        "qty": _num(_first(row, ("traded_volume", "volume", "qty", "quantity"))),
-        "price": _num(_first(row, ("traded_price", "price"))),
+        "qty": qty,
+        "quantity": qty,
+        "price": price,
+        "amount": _num(_first(row, ("traded_amount", "amount", "turnover"))),
         "side": _ORDER_TYPE_SIDE.get(_first(row, ("order_type", "side"))),
+        "time": _first(row, ("traded_time", "time", "order_time")),
+        "strategy_name": _first(row, ("strategy_name", "strategyName")),
     }
 
 
@@ -787,13 +938,13 @@ def _quote_from_payload(payload: Any, code: str) -> dict[str, Any]:
     }
 
 
-def _bars_from_payload(payload: Any) -> list[dict[str, Any]]:
+def _bars_from_payload(payload: Any, *, symbol: str = "") -> list[dict[str, Any]]:
     if payload is None:
         return []
     if isinstance(payload, list):
         return [dict(item) if isinstance(item, Mapping) else {"value": item} for item in payload]
     if isinstance(payload, Mapping):
-        # DataFrame-serialized styles or {data: [...]}
+        # DataFrame-serialized styles or {data: [...]} / {data: {code: [...]}}
         for key in ("data", "bars", "result", "kline"):
             value = payload.get(key)
             if isinstance(value, list):
@@ -801,6 +952,20 @@ def _bars_from_payload(payload: Any) -> list[dict[str, Any]]:
                     dict(item) if isinstance(item, Mapping) else {"value": item}
                     for item in value
                 ]
+            if isinstance(value, Mapping):
+                for candidate in (symbol, symbol.upper(), symbol.lower()):
+                    inner = value.get(candidate)
+                    if isinstance(inner, list):
+                        return [
+                            dict(item) if isinstance(item, Mapping) else {"value": item}
+                            for item in inner
+                        ]
+                for inner in value.values():
+                    if isinstance(inner, list):
+                        return [
+                            dict(item) if isinstance(item, Mapping) else {"value": item}
+                            for item in inner
+                        ]
         # Column-oriented: {open: [...], close: [...], ...}
         closes = payload.get("close")
         if isinstance(closes, list):

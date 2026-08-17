@@ -993,6 +993,7 @@ class GroundingLedger:
         issues.extend(self._validate_identity(content))
         issues.extend(self._validate_unsourced_symbols(content))
         issues.extend(self._validate_price_claims(content))
+        issues.extend(self._validate_placeholder_closer(content))
         result = ValidationResult(valid=not issues, issues=issues)
         self._validations.append(
             {
@@ -1647,6 +1648,38 @@ class GroundingLedger:
                         )
                     )
                     room -= 1
+
+    _PLACEHOLDER_CLOSER = re.compile(
+        r"(以上就是.{0,24}(分析|报告|复盘)|完整深度分析|"
+        r"that's (the )?(full |complete )?(in-depth )?analysis)",
+        re.IGNORECASE,
+    )
+
+    def _validate_placeholder_closer(self, content: str) -> list[dict[str, Any]]:
+        """Reject drafts that treat the tool timeline as the user-visible report."""
+        text = (content or "").strip()
+        if not text or not self._price_records():
+            return []
+        has_structure = ("|" in text and "---" in text) or bool(
+            re.search(r"^#{2,3} ", text, re.MULTILINE)
+        )
+        if has_structure and len(text) >= 400:
+            return []
+        if self._PLACEHOLDER_CLOSER.search(text) and len(text) < 800:
+            return [
+                {
+                    "code": "placeholder_analysis",
+                    "message": (
+                        "The draft only pointed at the tool-call list as 'the analysis'. "
+                        "The user cannot read tool results as a report. Write the full "
+                        "analysis in this same message: headings, markdown tables, "
+                        "as-of prices from successful tools, and explicit 'not retrieved' "
+                        "for failed fund-flow/news. Do not call read_file on data/raw "
+                        "CSVs unless you wrote those files this session."
+                    ),
+                }
+            ]
+        return []
 
     def _validate_identity(self, content: str) -> list[dict[str, Any]]:
         """Validate aggregate state and listed/private contradictions."""

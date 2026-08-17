@@ -200,6 +200,7 @@ class DataConfig(_EnvBase):
     qmt_bridge_port: int = Field(alias="QMT_BRIDGE_PORT", default=8000)
     qmt_bridge_api_key: str = Field(alias="QMT_BRIDGE_API_KEY", default="")
     qmt_bridge_account_id: str = Field(alias="QMT_BRIDGE_ACCOUNT_ID", default="")
+    qmt_bridge_account_type: str = Field(alias="QMT_BRIDGE_ACCOUNT_TYPE", default="")
 
 
 # ---------------------------------------------------------------------------

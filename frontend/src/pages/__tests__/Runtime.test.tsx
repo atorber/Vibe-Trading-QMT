@@ -190,6 +190,19 @@ describe("Runtime page", () => {
     expect(screen.getByText("dormant")).toBeInTheDocument();
   });
 
+  it("pins qmt ahead of other brokers", async () => {
+    apiMock.getLiveStatus.mockResolvedValue(
+      makeStatus({
+        brokers: [...makeStatus().brokers, ...makeQmtStatus().brokers],
+      }),
+    );
+
+    render(<Runtime />);
+
+    const headings = await screen.findAllByRole("heading", { level: 2 });
+    expect(headings[0]).toHaveTextContent(/^qmt$/i);
+  });
+
   it("fails closed when live status is unavailable", async () => {
     apiMock.getLiveStatus.mockRejectedValue(new Error("backend offline"));
 

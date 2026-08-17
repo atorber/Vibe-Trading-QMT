@@ -21,7 +21,31 @@ const PROXY_PATHS = [
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const apiTarget = env.VITE_API_URL || "http://127.0.0.1:8899";
-  const apiProxy = { target: apiTarget, changeOrigin: true };
+  const devPort = 5899;
+  const apiProxy = {
+    target: apiTarget,
+    changeOrigin: true,
+    // LAN UI Origin is http://<lan-ip>:5899; the API CSRF guard only
+    // trusts loopback. Rewrite same-origin Origin (matches Host) so the
+    // proxied request is accepted; leave cross-site Origin unchanged.
+    configure(proxy: {
+      on: (
+        event: "proxyReq",
+        listener: (
+          proxyReq: { setHeader: (name: string, value: string) => void },
+          req: { headers: { origin?: string; host?: string } },
+        ) => void,
+      ) => void;
+    }) {
+      proxy.on("proxyReq", (proxyReq, req) => {
+        const origin = req.headers.origin;
+        const host = req.headers.host;
+        if (origin && host && origin === `http://${host}`) {
+          proxyReq.setHeader("Origin", `http://127.0.0.1:${devPort}`);
+        }
+      });
+    },
+  };
   const apiProxyWithHtmlFallback = {
     ...apiProxy,
     bypass(req: { headers: { accept?: string } }) {
@@ -37,7 +61,9 @@ export default defineConfig(({ mode }) => {
       alias: { "@": path.resolve(__dirname, "./src") },
     },
     server: {
-      port: 5899,
+      host: true,
+      port: devPort,
+      allowedHosts: true,
       proxy: {
         ...Object.fromEntries(PROXY_PATHS.map((p) => [p, apiProxy])),
         // SPA RunDetail page — only the two-segment ``/runs/{id}``

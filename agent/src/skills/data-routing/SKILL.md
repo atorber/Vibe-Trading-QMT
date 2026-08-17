@@ -25,6 +25,7 @@ per-source skill.
 | okx | Crypto (OKX exchange) | No | Needs okx.com access | okx-market |
 | ccxt | Crypto (100+ exchanges) | No | Needs exchange access | ccxt |
 | baostock | A-shares (free daily/min) | No | China network | data-routing |
+| qmt | A-shares via QMT Bridge | Optional (`QMT_BRIDGE_*`) | Local/LAN gateway | data-routing |
 | tencent | A-shares, HK, US (never-banned) | No | Unrestricted | data-routing |
 | mootdx | A-shares (TDX servers, never-banned) | No | China network | data-routing |
 | futu | A/HK/US via OpenD gateway | Yes (OpenD running) | Local gateway | data-routing (runner-internal) |
@@ -92,7 +93,7 @@ same-market sources automatically. Only set a concrete source when the user asks
 
 ### Source priority (for OHLCV by market)
 
-- **A-shares**: tencent / mootdx (never banned) > tushare (`TUSHARE_TOKEN`) >
+- **A-shares**: qmt (QMT Bridge) > tencent / mootdx (never banned) > tushare (`TUSHARE_TOKEN`) >
   baostock / akshare > eastmoney (throttled).
 - **US stocks**: stooq / yahoo > tiingo / finnhub / fmp / alphavantage (key-gated) >
   sina / eastmoney (throttled) > yfinance.

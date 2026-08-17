@@ -393,12 +393,26 @@ class TradingOrdersTool(BaseTool):
     """Read open orders from a trading connector profile."""
 
     name = "trading_orders"
-    description = "Read open orders from the selected trading connector profile. Read-only."
+    description = (
+        "Read today's orders and fills from the selected trading connector. "
+        "For QMT this always calls GET /api/trading/orders and GET /api/trading/trades. "
+        "Pass start_time/end_time as YYYYMMDD to also call GET /api/trading/history_trades. "
+        "On this QMT, history_trades may still only return the same session as today's trades; "
+        "history_orders is often unsupported. Do not infer fills from available_qty or ask for a 交割单 unless history_executions is empty for prior days."
+    )
     parameters = {
         "type": "object",
         "properties": {
             **TRADING_COMMON_PARAMETERS,
             "include_executions": {"type": "boolean", "default": False},
+            "start_time": {
+                "type": "string",
+                "description": "Optional history start date YYYYMMDD (QMT: export/query deal history).",
+            },
+            "end_time": {
+                "type": "string",
+                "description": "Optional history end date YYYYMMDD. Empty means through today.",
+            },
         },
         "required": [],
     }
@@ -412,6 +426,8 @@ class TradingOrdersTool(BaseTool):
                 get_open_orders(
                     _connection(kwargs.get("connection")),
                     include_executions=bool(kwargs.get("include_executions", False)),
+                    start_time=str(kwargs.get("start_time") or ""),
+                    end_time=str(kwargs.get("end_time") or ""),
                     **_overrides(kwargs),
                 )
             )
