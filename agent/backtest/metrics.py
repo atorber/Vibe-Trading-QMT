@@ -24,6 +24,9 @@ _TRADING_DAYS = {
     # existing
     "tushare": 252, "yfinance": 252, "okx": 365, "akshare": 252, "ccxt": 365,
     "mootdx": 252, "futu": 252, "mt5": 260,
+    # tickerall serves the same broker forex/CFD feed as mt5 (hosted, no local
+    # terminal), so it mirrors mt5's 24x5 annualisation everywhere in this table.
+    "tickerall": 260,
     # crypto
     "binance": 365,
     # A-share equity
@@ -60,7 +63,7 @@ _BARS_PER_DAY = {
             # crypto (24h)
             "okx": 1440, "ccxt": 1440, "binance": 1440,
             # forex/CFD (24h intraday)
-            "mt5": 1440,
+            "mt5": 1440, "tickerall": 1440,
             # Indian equity (6.25h session)
             "india_broker": 375,
             # Korean equity (6.5h session, 09:00-15:30 KST)
@@ -73,7 +76,7 @@ _BARS_PER_DAY = {
             "qmt": 48,
             "eastmoney": 48,  "sina": 48,  "mootdx": 48,  "futu": 48,
             "okx": 288,  "ccxt": 288,  "binance": 288,
-            "mt5": 288,
+            "mt5": 288, "tickerall": 288,
             "india_broker": 75,
             "pykrx": 78,
             },
@@ -84,7 +87,7 @@ _BARS_PER_DAY = {
             "qmt": 16,
             "eastmoney": 16,  "sina": 16,  "mootdx": 16,  "futu": 16,
             "okx": 96,   "ccxt": 96,   "binance": 96,
-            "mt5": 96,
+            "mt5": 96, "tickerall": 96,
             "india_broker": 25,
             "pykrx": 26,
             },
@@ -95,7 +98,7 @@ _BARS_PER_DAY = {
             "qmt": 8,
             "eastmoney": 8,   "sina": 8,   "mootdx": 8,   "futu": 8,
             "okx": 48,   "ccxt": 48,   "binance": 48,
-            "mt5": 48,
+            "mt5": 48, "tickerall": 48,
             "india_broker": 13,
             "pykrx": 13,
             },
@@ -106,7 +109,7 @@ _BARS_PER_DAY = {
             "qmt": 4,
             "eastmoney": 4,   "sina": 4,   "mootdx": 4,   "futu": 4,
             "okx": 24,   "ccxt": 24,   "binance": 24,
-            "mt5": 24,
+            "mt5": 24, "tickerall": 24,
             "india_broker": 7,
             "pykrx": 7,
             },
@@ -117,7 +120,7 @@ _BARS_PER_DAY = {
             "qmt": 1,
             "eastmoney": 1,   "sina": 1,   "mootdx": 1,   "futu": 1,
             "okx": 6,    "ccxt": 6,    "binance": 6,
-            "mt5": 6,
+            "mt5": 6, "tickerall": 6,
             "india_broker": 2,
             "pykrx": 2,
             },
@@ -128,7 +131,7 @@ _BARS_PER_DAY = {
             "qmt": 1,
             "eastmoney": 1,   "sina": 1,   "mootdx": 1,   "futu": 1,
             "okx": 1,    "ccxt": 1,    "binance": 1,
-            "mt5": 1,
+            "mt5": 1, "tickerall": 1,
             "india_broker": 1,
             "pykrx": 1,
             },

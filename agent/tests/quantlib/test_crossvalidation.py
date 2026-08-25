@@ -17,6 +17,7 @@ from src.quantlib.crossvalidation import (
     Split,
     combinatorial_purged_splits,
     detect_boundary_leakage,
+    group_purged_kfold_splits,
     purged_kfold_splits,
     purged_walk_forward_splits,
 )
@@ -225,6 +226,37 @@ def test_label_end_times_accepts_a_timestamp_series():
         assert split.purged >= 0
 
 
+def test_label_ending_between_observations_maps_to_the_prior_observation():
+    index = pd.date_range("2024-01-01", periods=10, freq="B")
+    ends = pd.Series(index, index=index)
+    # Observation 3 starts on Thursday and resolves on Saturday. The second
+    # fold begins on Monday, so this label does not overlap that test block.
+    ends.iloc[3] = pd.Timestamp("2024-01-06")
+
+    split = list(
+        purged_kfold_splits(len(index), ends, n_folds=2, embargo_fraction=0.0)
+    )[1]
+
+    assert split.test_bounds == (5, 9)
+    assert 3 in split.train
+    assert split.purged == 0
+
+
+def test_label_ending_on_an_observation_keeps_that_exact_position():
+    index = pd.date_range("2024-01-01", periods=10, freq="B")
+    ends = pd.Series(index, index=index)
+    # Observation 3 resolves exactly when the second fold begins, so closed
+    # intervals overlap at that instant and the observation must be purged.
+    ends.iloc[3] = index[5]
+
+    split = list(
+        purged_kfold_splits(len(index), ends, n_folds=2, embargo_fraction=0.0)
+    )[1]
+
+    assert 3 not in split.train
+    assert split.purged == 1
+
+
 def test_a_label_ending_before_it_starts_is_rejected():
     bad = np.arange(100) - 5
     with pytest.raises(ValueError, match="cannot end before"):
@@ -280,3 +312,44 @@ def test_purge_counts_are_reported_not_hidden():
     for split in purged_kfold_splits(n, labels, n_folds=5):
         removed = n - split.train.size - split.test.size
         assert split.purged + split.embargoed == removed
+
+# --------------------------------------------------------------------------
+# group_purged_kfold_splits
+# --------------------------------------------------------------------------
+
+
+def test_group_purged_kfold_splits_prevents_cross_sectional_leakage():
+    # 10 assets x 100 dates = 1000 observations
+    n_dates = 100
+    n_assets = 10
+    dates = np.repeat(np.arange(n_dates), n_assets)
+
+    splits = list(group_purged_kfold_splits(dates, n_folds=5, embargo_fraction=0.05))
+    assert len(splits) == 5
+
+    for split in splits:
+        # 1. No shared row indices
+        assert len(np.intersect1d(split.train, split.test)) == 0
+
+        # 2. No shared dates between train and test
+        train_dates = set(dates[split.train])
+        test_dates = set(dates[split.test])
+        assert train_dates.intersection(test_dates) == set()
+
+        # 3. Exactly n_assets * number of test dates in test set
+        assert len(split.test) == len(test_dates) * n_assets
+
+        # 4. Embargo is applied to subsequent dates
+        test_max_date = max(test_dates)
+        embargo_expected_end = test_max_date + int(round(n_dates * 0.05))
+        for d in range(test_max_date + 1, min(n_dates, embargo_expected_end)):
+            assert d not in train_dates
+
+
+def test_group_purged_kfold_splits_input_validation():
+    with pytest.raises(ValueError, match="at least 2"):
+        list(group_purged_kfold_splits([1, 1, 2, 2], n_folds=1))
+    with pytest.raises(ValueError, match="cannot make 5 folds"):
+        list(group_purged_kfold_splits([1, 1, 2, 2], n_folds=5))
+    with pytest.raises(ValueError, match="groups array cannot be empty"):
+        list(group_purged_kfold_splits([], n_folds=2))
