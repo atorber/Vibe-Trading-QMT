@@ -52,6 +52,7 @@
 
 > ⚠️ **安全警告：** X 账号 `VibeTrading_HKU`、Virtuals 项目 `101845` 及代币合约 `0x640BDBF77b6447E8b7DB7894cED84BD1c40571f4` 均非 Vibe-Trading 官方。我们从未发行或背书任何代币或 meme 币。请勿购买、连接钱包或签名。[详细说明](SECURITY.md#official-channels--impersonation)。
 
+- **2026-08-28** 📈 **行情页与持仓总资产/净资产拆分**：新增 `/markets` 页面——本地自选股、K 线、板块热度、**叙事**与**异动** Tab（基于 OHLCV 的规则洞察）、新闻、同行、财报，以及按需 LLM 评估（`POST /api/markets/{symbol}/assessment`，每标的 5 分钟限流）。行情 REST 含自选股增删改查、`GET /api/markets` 概览、`GET /api/markets/{symbol}` 详情（内嵌洞察），以及 `…/news`、`…/earnings`、`…/peers`——A 股报价走 QMT Bridge，支持批量中文名称、历史 K 线，本地无缓存时自动触发下载。持仓页区分**总资产**与扣融资后的**净资产**——QMT 两融（`m_dBalance` / `m_dAssureAsset`）与富途孖展（`total_assets` + `debt_cash`）——并显示相对昨日末次快照的**当日总资产/净资产变动**及各指标说明；「计入现金」仅影响估值覆盖率。QMT 连接器另统一 K 线时间戳、补齐持仓 `name`；`sector_tool` 为 Agent 解析 A 股同行业标的。
 - **2026-08-27** 🛑 **kill-switch 清仓扫单挺过重启，也不再轻信不稳的券商连接**：halt 期间，撤单+平仓扫单把券商的任何响应都当成功——但 MCP 适配层会把失败调用转成 `{"status": "error"}` 信封，于是一次断线就能留下一份看起来合规的审计记录，而挂单其实还活着；现在两个阶段都对错误信封 fail-closed（[#1232](https://github.com/HKUDS/Vibe-Trading/pull/1232)）。扫单的「只发一次」闩锁原先只在内存里：平仓单还在飞时重启进程，会把整轮扫单重放一遍——每个持仓再来一张市价单，足以把多头账户打成净空头；闩锁现在持久化在 HALT 哨兵旁并绑定该次 halt，清除后再触发仍会重新武装（[#1233](https://github.com/HKUDS/Vibe-Trading/pull/1233)）。**新增**：每个市场的数据源回退顺序在 *Settings → Data Source Priority* 里可见、可重排——热生效、按市场持久化（`MARKET_DATA_ORDER_*`），且只允许重排：增删数据源一律拒绝，不设覆盖时默认顺序分毫不动（[#1231](https://github.com/HKUDS/Vibe-Trading/pull/1231)）；Binance USD-M 对账结果落为防篡改的漂移证据产物——严格 JSON，快照不完整或来源不支持即 fail-closed，无任何下单面（[#1230](https://github.com/HKUDS/Vibe-Trading/pull/1230)，推进 [#1030](https://github.com/HKUDS/Vibe-Trading/issues/1030)）。感谢 [@he-yufeng](https://github.com/he-yufeng)、[@sambazhu](https://github.com/sambazhu)、[@honginp](https://github.com/honginp)！
 - **2026-08-26** ♻️ **实盘 Alpaca 下单丢失券商响应不再是悬案；黄金回测不再零摩擦**：下单闸门在写 broker 前先持久化这笔提交的所有权，恢复只认精确 `client_order_id`，成交按带符号仓位增量归因，任何矛盾直接 HALT——恢复路径绝不重发（[#1213](https://github.com/HKUDS/Vibe-Trading/pull/1213)、[#1221](https://github.com/HKUDS/Vibe-Trading/pull/1221)、[#1222](https://github.com/HKUDS/Vibe-Trading/pull/1222)）。**修复：** 贵金属沿用外汇 pip/手数约定，黄金点差成本小了约 1460 倍、1000 盎司以下仓位被静默归零（[#1226](https://github.com/HKUDS/Vibe-Trading/pull/1226)）；富途 HKD 持仓被当成 USD 估值，虚高约一个 USD/HKD 汇率（[#1228](https://github.com/HKUDS/Vibe-Trading/pull/1228)）；Shadow Account 读的是 runner 从不产出的指标键，成功回测一律报 PnL = 0.00（[#1217](https://github.com/HKUDS/Vibe-Trading/pull/1217)）；流式 LLM 调用从不请求用量，swarm 输出 token 少报约 18–36 倍（[#1225](https://github.com/HKUDS/Vibe-Trading/pull/1225)）。**新增：** Binance 只读 USD-M 账户快照（可选开启）——仅两个白名单签名读端点、无任何下单面（[#1229](https://github.com/HKUDS/Vibe-Trading/pull/1229)，朝向 [#1030](https://github.com/HKUDS/Vibe-Trading/issues/1030)）；组合页 OAuth 重连改在受限子进程运行，不再卡死 Web 进程或占住回调端口（[#1211](https://github.com/HKUDS/Vibe-Trading/pull/1211)）。感谢 [@Elfsa-Miranda](https://github.com/Elfsa-Miranda)、[@P1Piyush](https://github.com/P1Piyush)、[@JaxonHu1024](https://github.com/JaxonHu1024)、[@he-yufeng](https://github.com/he-yufeng)、[@honginp](https://github.com/honginp)、[@goatyyc](https://github.com/goatyyc)！
 - **2026-08-25** 🛡️ **堵上实盘闸门的两个 fail-open；purged CV 不再清空测试块之间的训练集**：Alpaca 空头被记成*正*敞口（`qty` 恒为绝对值、方向在 `side`），越卖 `max_total_exposure_usd` 反而越松——现在 TAP JSON 与直连 SDK 两条路径的数量都带符号（[#1209](https://github.com/HKUDS/Vibe-Trading/pull/1209)）；OKX/Futu 会把被拒绝的 API 调用压平成「空账本，`status: ok`」，让授权闸门对着空仓评估限额——现在返回明确错误信封，闸门据此 fail-closed（[#1212](https://github.com/HKUDS/Vibe-Trading/pull/1212)）。两者同属 [#1207](https://github.com/HKUDS/Vibe-Trading/issues/1207) 审计路线图的 Phase 0。**修复：** 组合式 purged CV 把非连续测试块当成一整段、清掉它们之间的全部训练观测；现在按段独立 purge，训练集被清空的折直接抛错（[#1204](https://github.com/HKUDS/Vibe-Trading/pull/1204)）；信用风险函数拒绝 NaN/inf 输入，不再返回 NaN 分数或「灰色地带」结论（[#1215](https://github.com/HKUDS/Vibe-Trading/pull/1215)，关闭 [#1214](https://github.com/HKUDS/Vibe-Trading/issues/1214)）。**新增：** swarm worker 重试改为封顶 equal-jitter 退避（[#1210](https://github.com/HKUDS/Vibe-Trading/pull/1210)，朝向 [#1208](https://github.com/HKUDS/Vibe-Trading/issues/1208)）；`vibe-trading --swarm-retry <run_id>` / `/swarm retry` 可重跑失败运行，`--resume` 保留已完成任务（[#1194](https://github.com/HKUDS/Vibe-Trading/pull/1194)）。感谢 [@he-yufeng](https://github.com/he-yufeng)、[@santhreal](https://github.com/santhreal)、[@Robin1987China](https://github.com/Robin1987China)、[@pengpengyi92](https://github.com/pengpengyi92)、[@SiMinus](https://github.com/SiMinus)！
@@ -297,6 +298,8 @@ Vibe-Trading 是一个开源研究工作台，用于把金融问题转化为可�
 | **交付可用成果** | 报告、TradingView Pine Script、TDX、MetaTrader 5、MCP tools，以及可延续的研究 sessions。 |
 | **跑预置 alpha zoo 横评** | 462 个 alpha 因子（Qlib 158 + Kakushadze 101 + GTJA 191 + academic + PIT-safe fundamental），一行 CLI 在你选的 universe 上算 IC + IR + alive/reversed/dead 分类 |
 | **识别相关性状态** | `/correlation` 界面上的边密度 + 迟滞时间线，显示市场何时融合为一个板块——属于描述性风险上下文，而非交易信号。 |
+| **浏览行情自选** | `/markets` 页面：K 线、板块热度、叙事、异动、新闻、同行对比、财报日历，以及按需 LLM 评估。 |
+| **汇总实盘持仓** | `/portfolio` 页面：多券商快照、总资产/净资产拆分、当日资产变动、CSV 导出，以及 `portfolio_risk_xray` 接入。 |
 
 ---
 
@@ -349,7 +352,11 @@ Web UI 新增只读的 **持仓** 页面，把你选中的券商连接的持仓�
 | **逐源出处** | 每一笔持仓都标明来自哪个连接，以 USD 计价并给出 CNY 换算。 |
 | **失败的源被排除** | 读取失败的源会作为错误报告并排除在合计之外——绝不沿用上一次的数据——快照本身标记为不完整。 |
 | **不可变快照** | 每次刷新都写入 `~/.vibe-trading/portfolio/portfolio.sqlite3`；不含凭证的设置保存在 `~/.vibe-trading/portfolio.json` 与 `connections.json`。 |
+| **总资产 vs 净资产** | 顶部**总资产**汇总各账户券商上报的毛资产；**净资产**扣除融资/融券等负债。有负债的账户卡主显总资产，副标题显示净资产。 |
+| **当日变动** | **当日资产变动**将当前快照与昨日最后一次完整刷新对比——含总资产与净资产两个口径——覆盖行情波动、交易与资金进出；无昨日基线时显示 —。 |
 | **导出与分析** | 支持 CSV 导出，并提供脱敏的 `portfolio_summary` agent 工具，其 `risk_xray_args` 可直接传给 `portfolio_risk_xray`。终端里 `vibe-trading portfolio show` 打印同一份快照（另有 `refresh` / `sources`）。 |
+
+券商上报的源币种在估值时保留：HKD 账户总额与持仓（含富途 `HK.*`）先按快照 USD/HKD 汇率换算，再显示 USD 与 CNY。旧快照仍会保留，但历史曲线只比较当前估值口径下的快照，避免修复估值逻辑后出现虚假涨跌。
 
 你自己安装的只读连接器留在仓库之外的 `~/.vibe-trading/connectors/<name>/`：一个 `connector.json` manifest，加一个实现 `check_status` / `get_account_snapshot` / `get_positions` 的 `adapter.py`。声明了任何写能力的 manifest 会被拒绝。
 
@@ -360,6 +367,22 @@ vibe-trading connector install /tmp/my-broker
 ```
 
 它们的凭证通过 `pip install "vibe-trading-ai[keyring]"` 存入操作系统钥匙串（macOS Keychain、Windows Credential Manager、Linux Secret Service），不会写进配置文件。这条路径上的任何东西都不能下单或撤单。
+
+---
+
+## 📈 行情中心
+
+Web UI 新增只读的 **行情** 页面，用于浏览本地自选股列表中的标的——与跨券商汇总的持仓页相互独立。
+
+| 行为 | 你得到什么 |
+|------|------------|
+| **本地自选股** | 搜索添加标的；状态保存在浏览器，并通过 `GET`/`PUT`/`POST`/`DELETE /api/markets/watchlist` 同步。 |
+| **行情上下文** | 选中标的后可查看 K 线、板块热度、个股新闻、同行对比与财报日历等 Tab。 |
+| **叙事与异动** | 独立 Tab 展示基于 OHLCV + 报价的规则洞察（日内走势、放量等）——与详情 API 内嵌逻辑一致，供评估聚合使用。 |
+| **按需评估** | 点击「生成评估」调用 `POST /api/markets/{symbol}/assessment`——聚合报价、叙事、异动、新闻、同行与财报，由 LLM 输出一次结构化摘要（每标的 5 分钟限流，带缓存）。 |
+| **REST 接口** | `GET /api/markets` 概览；`GET /api/markets/{symbol}` 详情；`GET …/news`、`…/earnings`、`…/peers`；以及上述自选股 CRUD。 |
+| **QMT Bridge 行情** | A 股标的经 QMT Bridge 获取 tick、合约详情、批量中文名称与历史 K 线——本地无 bars 时自动触发下载。 |
+| **与 Agent 一致** | 页面调用的板块、新闻与同行业解析工具与 Agent 共用同一后端。 |
 
 ---
 
