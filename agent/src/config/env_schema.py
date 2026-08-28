@@ -334,7 +334,22 @@ class SwarmConfig(_EnvBase):
     swarm_timeout: int = Field(alias="SWARM_TIMEOUT", default=1800)
     swarm_heartbeat_interval_s: float = Field(alias="SWARM_HEARTBEAT_INTERVAL_S", default=3.0)
     swarm_stream_retry_delay_s: float = Field(alias="SWARM_STREAM_RETRY_DELAY_S", default=1.0)
+    swarm_worker_retry_base_delay_s: float = Field(
+        alias="SWARM_WORKER_RETRY_BASE_DELAY_S", default=1.0, ge=0
+    )
+    swarm_worker_retry_max_delay_s: float = Field(
+        alias="SWARM_WORKER_RETRY_MAX_DELAY_S", default=30.0, ge=0
+    )
     swarm_grounding_max_symbols: int = Field(alias="SWARM_GROUNDING_MAX_SYMBOLS", default=8)
+
+    @model_validator(mode="after")
+    def _validate_worker_retry_delays(self) -> SwarmConfig:
+        if self.swarm_worker_retry_max_delay_s < self.swarm_worker_retry_base_delay_s:
+            raise ValueError(
+                "SWARM_WORKER_RETRY_MAX_DELAY_S must be greater than or equal to "
+                "SWARM_WORKER_RETRY_BASE_DELAY_S"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import socket
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -476,3 +478,64 @@ def test_auth_metadata_describes_the_profile_without_claiming_key_permissions():
         "readonly": True,
         "detail": "Use credentials configured by the local operator.",
     }
+
+
+def _reconnect_service(tmp_path):
+    return PortfolioService(
+        PortfolioStore(tmp_path / "portfolio.sqlite3"),
+        settings_store=_settings_store(tmp_path),
+        get_account=lambda *_args, **_kwargs: {},
+        get_positions=lambda *_args, **_kwargs: {},
+        get_quote=lambda *_args, **_kwargs: {},
+    )
+
+
+def _oauth_profile():
+    return TradingProfile(
+        id="ibkr-live-official-mcp-readonly",
+        connector="ibkr",
+        label="IBKR OAuth",
+        environment="live",
+        transport="remote_mcp",
+        capabilities=("account.read", "positions.read"),
+        readonly=True,
+    )
+
+
+def test_reconnect_rejects_an_occupied_oauth_callback_port(monkeypatch, tmp_path):
+    monkeypatch.setattr(portfolio_service, "profile_by_id", lambda *_: _oauth_profile())
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        callback_port = listener.getsockname()[1]
+        server = SimpleNamespace(
+            auth=SimpleNamespace(callback_port=callback_port),
+        )
+        monkeypatch.setattr(
+            "src.config.loader.load_agent_config",
+            lambda: SimpleNamespace(mcp_servers={"ibkr": server}),
+        )
+
+        with pytest.raises(RuntimeError, match=str(callback_port)):
+            _reconnect_service(tmp_path).reconnect_source("ibkr")
+
+
+def test_reconnect_contains_callback_server_system_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr(portfolio_service, "profile_by_id", lambda *_: _oauth_profile())
+    server = SimpleNamespace(auth=SimpleNamespace(callback_port=None))
+    monkeypatch.setattr(
+        "src.config.loader.load_agent_config",
+        lambda: SimpleNamespace(mcp_servers={"ibkr": server}),
+    )
+
+    class FailingAdapter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_tools(self):
+            raise BaseExceptionGroup("callback startup", [SystemExit(3)])
+
+    monkeypatch.setattr("src.tools.mcp.MCPServerAdapter", FailingAdapter)
+
+    with pytest.raises(RuntimeError, match="stopped safely"):
+        _reconnect_service(tmp_path).reconnect_source("ibkr")

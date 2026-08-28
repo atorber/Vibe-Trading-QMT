@@ -1863,6 +1863,7 @@ def _print_help() -> None:
         ("/swarm list", "List team run history"),
         ("/swarm show <run_id>", "Show a team run"),
         ("/swarm cancel <run_id>", "Cancel a team run"),
+        ("/swarm retry <run_id> [--resume]", "Retry a team run or resume a failed one"),
         ("/sessions", "List chat sessions"),
         ("/settings", "Show provider, model, timeout, and credentials"),
         ("/stop", "How to gracefully cancel a running agent"),
@@ -2029,6 +2030,14 @@ def _handle_swarm_command(arg: str) -> None:
             cmd_swarm_cancel(sub_arg)
         else:
             console.print("[red]Usage: /swarm cancel <run_id>[/red]")
+    elif sub == "retry":
+        retry_parts = sub_arg.split()
+        if len(retry_parts) == 1:
+            cmd_swarm_retry_live(retry_parts[0])
+        elif len(retry_parts) == 2 and retry_parts[1] == "--resume":
+            cmd_swarm_retry_live(retry_parts[0], resume=True)
+        else:
+            console.print("[red]Usage: /swarm retry <run_id> [--resume][/red]")
     else:
         console.print(f"[red]Unknown swarm command: {sub}[/red]")
 
@@ -2179,6 +2188,9 @@ class _SwarmDashboard:
             summary = data.get("summary", "")
             if summary:
                 self.completed_summaries.append((agent["name"], summary))
+        elif etype == "task_resumed":
+            agent["status"] = "resumed"
+            agent["tool"] = "kept"
         elif etype == "task_failed":
             agent["status"] = "failed"
             agent["elapsed"] = (time.monotonic() - agent["started_at"]) if agent["started_at"] else 0
@@ -2247,6 +2259,9 @@ class _SwarmDashboard:
             elif status == "done":
                 status_str = "[green][\u2713 done  ][/green]"
                 elapsed = agent["elapsed"]
+            elif status == "resumed":
+                status_str = "[green][\u2713 kept  ][/green]"
+                elapsed = agent["elapsed"]
             elif status == "failed":
                 status_str = "[red][\u2717 failed][/red]"
                 elapsed = agent["elapsed"]
@@ -2267,7 +2282,7 @@ class _SwarmDashboard:
             table.add_row(styled_name, status_str, agent["tool"], time_str, iter_str, last_text)
 
         # Progress bar row
-        done_count = sum(1 for a in self.agents.values() if a["status"] in ("done", "failed", "cancelled"))
+        done_count = sum(1 for a in self.agents.values() if a["status"] in ("done", "resumed", "failed", "cancelled"))
         total_count = len(self.agents) or 1
         pct = int(done_count / total_count * 100)
         bar_width = 40
@@ -2293,13 +2308,72 @@ class _SwarmDashboard:
         return table
 
 
+def _watch_swarm_run(store, runtime, run, dashboard: _SwarmDashboard) -> Optional[int]:
+    """Keep the CLI alive while a swarm run streams to its dashboard."""
+    from rich.live import Live
+    from src.swarm.models import RunStatus
+
+    dashboard.run_id = run.id
+
+    with Live(dashboard.build_table(), console=console, refresh_per_second=4, transient=False) as live:
+        try:
+            while True:
+                time.sleep(0.25)
+                live.update(dashboard.build_table())
+                current = store.load_run(run.id)
+                if current is None:
+                    console.print("[red]Run record lost[/red]")
+                    return
+                if current.status in (RunStatus.completed, RunStatus.failed, RunStatus.cancelled):
+                    dashboard.finished = True
+                    dashboard.final_status = current.status.value
+                    live.update(dashboard.build_table())
+                    break
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Cancelling...[/yellow]")
+            runtime.cancel_run(run.id)
+            time.sleep(1)
+            current = store.load_run(run.id)
+
+    if current is None:
+        return
+
+    for agent_name, summary in dashboard.completed_summaries:
+        style = _get_agent_style(agent_name)
+        console.print(f"\n[{style}]\u2500\u2500 {agent_name} \u2500\u2500[/{style}]")
+        lines = summary.strip().split("\n")
+        preview = "\n".join(lines[:8])
+        if len(lines) > 8:
+            preview += "\n[dim]...[/dim]"
+        console.print(preview)
+
+    status_color = {
+        RunStatus.completed: "green",
+        RunStatus.failed: "red",
+        RunStatus.cancelled: "yellow",
+    }.get(current.status, "dim")
+
+    elapsed_total = time.monotonic() - dashboard.start_time
+    mins, secs = divmod(int(elapsed_total), 60)
+
+    tokens_in = current.total_input_tokens
+    tokens_out = current.total_output_tokens
+    token_str = ""
+    if tokens_in or tokens_out:
+        token_str = f"\nTokens: ~{tokens_in + tokens_out:,} (in: {tokens_in:,} out: {tokens_out:,})"
+
+    if current.final_report:
+        console.print("\n[bold]\u2500\u2500 Final Report \u2500\u2500[/bold]")
+        console.print(current.final_report[:2000])
+
+    console.print(f"\n[{status_color}]{current.status.value.upper()}[/{status_color}]  Time: {mins}m {secs}s{token_str}")
+
+
 def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> Optional[int]:
     """Run a swarm preset with Rich Live dashboard."""
-    from rich.live import Live
     from src.config import load_swarm_agent_config
     from src.swarm.runtime import SwarmRuntime
     from src.swarm.store import SwarmStore
-    from src.swarm.models import RunStatus
 
     user_vars: Dict[str, str] = {}
     if vars_json:
@@ -2334,63 +2408,60 @@ def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> Optional
         console.print(f"[red]DAG validation failed: {exc}[/red]")
         return
 
-    dashboard.run_id = run.id
+    return _watch_swarm_run(store, runtime, run, dashboard)
 
-    with Live(dashboard.build_table(), console=console, refresh_per_second=4, transient=False) as live:
-        try:
-            while True:
-                time.sleep(0.25)
-                live.update(dashboard.build_table())
-                current = store.load_run(run.id)
-                if current is None:
-                    console.print("[red]Run record lost[/red]")
-                    return
-                if current.status in (RunStatus.completed, RunStatus.failed, RunStatus.cancelled):
-                    dashboard.finished = True
-                    dashboard.final_status = current.status.value
-                    live.update(dashboard.build_table())
-                    break
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Cancelling...[/yellow]")
-            runtime.cancel_run(run.id)
-            time.sleep(1)
-            current = store.load_run(run.id)
 
-    if current is None:
-        return
+def cmd_swarm_retry_live(run_id: str, resume: bool = False) -> Optional[int]:
+    """Retry a prior swarm run, optionally keeping completed tasks."""
+    from src.config import load_swarm_agent_config
+    from src.swarm.models import RunStatus
+    from src.swarm.runtime import SwarmRuntime
+    from src.swarm.store import SwarmStore
 
-    # Print completed agent summaries
-    for agent_name, summary in dashboard.completed_summaries:
-        style = _get_agent_style(agent_name)
-        console.print(f"\n[{style}]\u2500\u2500 {agent_name} \u2500\u2500[/{style}]")
-        # Truncate to first meaningful chunk
-        lines = summary.strip().split("\n")
-        preview = "\n".join(lines[:8])
-        if len(lines) > 8:
-            preview += "\n[dim]...[/dim]"
-        console.print(preview)
+    store = SwarmStore(base_dir=SWARM_DIR)
+    try:
+        loaded = store.load_run(run_id)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    if loaded is None:
+        console.print(f"[red]Run {run_id} not found[/red]")
+        return EXIT_USAGE_ERROR
 
-    # Final report
-    status_color = {
-        RunStatus.completed: "green",
-        RunStatus.failed: "red",
-        RunStatus.cancelled: "yellow",
-    }.get(current.status, "dim")
+    reconciled = store.reconcile_run(loaded, write=True)
+    if reconciled.status == RunStatus.running:
+        console.print("[red]Cannot retry a running run. Cancel or reap it first.[/red]")
+        return EXIT_USAGE_ERROR
+    if resume and reconciled.status not in (RunStatus.failed, RunStatus.cancelled):
+        console.print(
+            f"[red]Cannot resume a run in status '{reconciled.status.value}'; "
+            "resume only applies to failed or cancelled runs.[/red]"
+        )
+        return EXIT_USAGE_ERROR
 
-    elapsed_total = time.monotonic() - dashboard.start_time
-    mins, secs = divmod(int(elapsed_total), 60)
+    runtime = SwarmRuntime(store=store, agent_config=load_swarm_agent_config())
+    _agent_color_map.clear()
+    action = "Resuming swarm" if resume else "Retrying swarm"
+    console.print(f"\n[dim]{action}:[/dim] [cyan]{reconciled.preset_name}[/cyan]")
+    console.print(f"[dim]Source run:[/dim] {run_id}")
 
-    tokens_in = current.total_input_tokens
-    tokens_out = current.total_output_tokens
-    token_str = ""
-    if tokens_in or tokens_out:
-        token_str = f"\nTokens: ~{tokens_in + tokens_out:,} (in: {tokens_in:,} out: {tokens_out:,})"
+    dashboard = _SwarmDashboard(reconciled.preset_name, "")
+    try:
+        run = runtime.start_run(
+            reconciled.preset_name,
+            reconciled.user_vars or {},
+            live_callback=dashboard.handle_event,
+            include_shell_tools=True,
+            resume_from=reconciled if resume else None,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    except ValueError as exc:
+        console.print(f"[red]DAG validation failed: {exc}[/red]")
+        return EXIT_USAGE_ERROR
 
-    if current.final_report:
-        console.print("\n[bold]\u2500\u2500 Final Report \u2500\u2500[/bold]")
-        console.print(current.final_report[:2000])
-
-    console.print(f"\n[{status_color}]{current.status.value.upper()}[/{status_color}]  Time: {mins}m {secs}s{token_str}")
+    return _watch_swarm_run(store, runtime, run, dashboard)
 
 
 # ---------------------------------------------------------------------------
@@ -5130,6 +5201,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--swarm-list", action="store_true", help="List swarm runs")
     parser.add_argument("--swarm-show", metavar="RUN_ID", help="Show a swarm run")
     parser.add_argument("--swarm-cancel", metavar="RUN_ID", help="Cancel a swarm run")
+    parser.add_argument("--swarm-retry", metavar="RUN_ID", help="Retry a prior swarm run")
+    parser.add_argument("--swarm-resume", action="store_true", help="Keep completed tasks when retrying a swarm run")
 
     parser.add_argument("--sessions", action="store_true", help="List sessions")
     parser.add_argument("--session-chat", metavar="SESSION_ID", help="Continue a session chat")
@@ -6345,6 +6418,11 @@ def main(argv: list[str] | None = None) -> int:
         return _coerce_exit_code(cmd_swarm_show(args.swarm_show))
     if args.swarm_cancel:
         return _coerce_exit_code(cmd_swarm_cancel(args.swarm_cancel))
+    if args.swarm_retry:
+        return _coerce_exit_code(cmd_swarm_retry_live(args.swarm_retry, resume=args.swarm_resume))
+    if args.swarm_resume:
+        console.print("[red]--swarm-resume requires --swarm-retry RUN_ID[/red]")
+        return EXIT_USAGE_ERROR
 
     if args.sessions:
         return _coerce_exit_code(cmd_sessions())

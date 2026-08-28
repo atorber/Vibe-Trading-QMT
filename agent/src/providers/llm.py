@@ -530,7 +530,28 @@ if ChatOpenAI is not None:
                 cloned = copy(self)
                 cloned.root_client = _ResponsesSyncClient(self.root_client)
                 return super(ChatOpenAIWithReasoning, cloned)._stream(*args, **kwargs)
-            return super()._stream(*args, **kwargs)
+            return self._stream_with_usage_fallback(*args, **kwargs)
+
+        def _stream_with_usage_fallback(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
+            # stream_usage=True is set at build time so streamed calls report
+            # real token counts (issue #1224); an endpoint that rejects
+            # stream_options is remembered and retried without it.
+            model = str(self.model_name)
+            if model in _STREAM_USAGE_UNSUPPORTED:
+                yield from super()._stream(*args, stream_usage=False, **kwargs)
+                return
+            try:
+                yield from super()._stream(*args, **kwargs)
+                return
+            except Exception as exc:  # noqa: BLE001 - classified below
+                if not _is_stream_usage_unsupported_error(exc):
+                    raise
+            logger.warning(
+                "Endpoint rejects stream usage; streaming without stream_options for %s",
+                model,
+            )
+            _STREAM_USAGE_UNSUPPORTED.add(model)
+            yield from super()._stream(*args, stream_usage=False, **kwargs)
 
         async def _astream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
             """Async route matching ``_stream`` for Responses compatibility."""
@@ -541,9 +562,26 @@ if ChatOpenAI is not None:
                     *args, **kwargs
                 ):
                     yield chunk
-            else:
+                return
+            model = str(self.model_name)
+            if model in _STREAM_USAGE_UNSUPPORTED:
+                async for chunk in super()._astream(*args, stream_usage=False, **kwargs):
+                    yield chunk
+                return
+            try:
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
+                return
+            except Exception as exc:  # noqa: BLE001 - classified below
+                if not _is_stream_usage_unsupported_error(exc):
+                    raise
+            logger.warning(
+                "Endpoint rejects stream usage; streaming without stream_options for %s",
+                model,
+            )
+            _STREAM_USAGE_UNSUPPORTED.add(model)
+            async for chunk in super()._astream(*args, stream_usage=False, **kwargs):
+                yield chunk
 
         def _convert_chunk_to_generation_chunk(  # type: ignore[override]
             self,
@@ -815,6 +853,33 @@ def _native_deepseek_adapter_available() -> bool:
 # predictable, so membership is populated on first failure and then reused
 # process-wide to skip the redundant failed request on subsequent calls.
 _ANTHROPIC_TEMPERATURE_UNSUPPORTED: set[str] = set()
+
+# Endpoints discovered at runtime to reject the `stream_options` request
+# field. OpenAI-compatible gateways vary on include_usage support; membership
+# is populated on first failure and reused process-wide to skip the redundant
+# failed request on later calls (issue #1224).
+_STREAM_USAGE_UNSUPPORTED: set[str] = set()
+
+
+def _is_stream_usage_unsupported_error(exc: BaseException) -> bool:
+    """Return True when an endpoint rejects the `stream_options` field.
+
+    Matches request-validation rejections of `stream_options`/`include_usage`
+    regardless of the SDK exception type.
+    """
+    message = str(getattr(exc, "message", "") or exc).lower()
+    if "stream_options" not in message and "include_usage" not in message:
+        return False
+    return (
+        "unsupported" in message
+        or "not supported" in message
+        or "unknown" in message
+        or "unrecognized" in message
+        or "invalid" in message
+        or "not valid" in message
+        or "not a valid" in message
+        or "not allowed" in message
+    )
 
 # Cache of base ChatAnthropic class -> temperature-safe subclass, so the dynamic
 # subclass is built once per resolved base class (keyed to support test doubles).
@@ -1422,6 +1487,9 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
         "timeout": get_env_config().llm.timeout_seconds,
         "max_retries": get_env_config().llm.max_retries,
         "callbacks": callbacks,
+        # Ask for real token usage on streamed calls (issue #1224); endpoints
+        # that reject stream_options self-heal in _stream_with_usage_fallback.
+        "stream_usage": True,
         "output_version": "responses/v1" if use_responses_api else None,
         "use_responses_api": use_responses_api,
         "reasoning": (

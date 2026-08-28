@@ -104,9 +104,12 @@ def normalize_position(broker: str, row: dict[str, Any]) -> dict[str, Any]:
 
     symbol = str(row.get("symbol") or row.get("code") or "").upper()
     source = str(row.get("source") or ("spot" if broker == "binance" else "account"))
+    market = str(row.get("market") or row.get("exchange") or broker).upper()
     currency = str(row.get("currency") or "").upper()
     if not currency:
-        currency = "HKD" if symbol.endswith(".HK") else "USD"
+        currency = (
+            "HKD" if symbol.startswith("HK.") or symbol.endswith(".HK") else "USD"
+        )
     quantity = _decimal(
         row.get(
             "quantity", row.get("qty", row.get("position", row.get("position_qty")))
@@ -150,7 +153,7 @@ def normalize_position(broker: str, row: dict[str, Any]) -> dict[str, Any]:
             )
         ),
         "asset_type": asset_type,
-        "market": str(row.get("market") or row.get("exchange") or broker).upper(),
+        "market": market,
         "currency": currency,
         "quantity": _number(quantity),
         "cost_price": _number(cost) if cost > 0 else None,

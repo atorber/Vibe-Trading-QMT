@@ -14,6 +14,7 @@ vi.mock("@/lib/api", async () => {
       refreshPortfolio: vi.fn(),
       getPortfolioRefreshStatus: vi.fn(),
       reconnectPortfolioSource: vi.fn(),
+      getPortfolioReconnectStatus: vi.fn(),
       getPortfolioSettings: vi.fn(),
       updatePortfolioSettings: vi.fn(),
       getConnections: vi.fn(),
@@ -32,6 +33,7 @@ const mocked = api as unknown as {
   refreshPortfolio: ReturnType<typeof vi.fn>;
   getPortfolioRefreshStatus: ReturnType<typeof vi.fn>;
   reconnectPortfolioSource: ReturnType<typeof vi.fn>;
+  getPortfolioReconnectStatus: ReturnType<typeof vi.fn>;
   getPortfolioSettings: ReturnType<typeof vi.fn>;
   updatePortfolioSettings: ReturnType<typeof vi.fn>;
   getConnections: ReturnType<typeof vi.fn>;
@@ -86,6 +88,29 @@ const snapshotWithFailedSource = {
   warnings: ["Binance backup could not be read and is excluded from the totals."],
 };
 
+const snapshotWithFailedOAuth = {
+  ...snapshot,
+  complete: false,
+  accounts: [
+    {
+      source_id: "ibkr",
+      broker: "ibkr",
+      label: "IBKR",
+      status: "error" as const,
+      error_code: "AuthenticationError",
+      error: "OAuth authorization expired",
+      auth: {
+        method: "OAuth",
+        renewal: "automatic" as const,
+        readonly: true,
+        detail: "Interactive reauthorization is required.",
+      },
+    },
+    ...snapshot.accounts.slice(1),
+  ],
+  warnings: ["IBKR could not be read and is excluded from the totals."],
+};
+
 const portfolioConfiguration = {
   status: "ok",
   settings: {
@@ -111,6 +136,14 @@ describe("Portfolio page", () => {
     mocked.getPortfolioSettings.mockResolvedValue(portfolioConfiguration);
     mocked.updatePortfolioSettings.mockResolvedValue(portfolioConfiguration);
     mocked.refreshPortfolio.mockResolvedValue({ status: "ok", snapshot });
+    mocked.reconnectPortfolioSource.mockResolvedValue({
+      status: "started",
+      reconnect: { running: true, source_id: "ibkr", status: "authorizing" },
+    });
+    mocked.getPortfolioReconnectStatus.mockResolvedValue({
+      status: "ok",
+      reconnect: { running: false, source_id: "ibkr", status: "authorized", error: null },
+    });
     mocked.getPortfolioRefreshStatus.mockResolvedValue({
       status: "ok",
       refresh: {
@@ -174,6 +207,18 @@ describe("Portfolio page", () => {
 
     finishRefresh({ status: "ok", snapshot });
     await waitFor(() => expect(mocked.getPortfolioHistory).toHaveBeenCalledTimes(2));
+  });
+
+  it("polls an OAuth reconnect to completion before refreshing the portfolio", async () => {
+    mocked.getPortfolio.mockResolvedValue({ status: "ok", snapshot: snapshotWithFailedOAuth });
+    render(<Portfolio />);
+    await screen.findByText("OAuth authorization expired");
+
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("portfolio.accounts.reconnect") }));
+
+    await waitFor(() => expect(mocked.reconnectPortfolioSource).toHaveBeenCalledWith("ibkr"));
+    await waitFor(() => expect(mocked.getPortfolioReconnectStatus).toHaveBeenCalled(), { timeout: 2_000 });
+    await waitFor(() => expect(mocked.refreshPortfolio).toHaveBeenCalledTimes(1), { timeout: 2_000 });
   });
 
   it("edits selected read-only accounts without collecting credentials", async () => {

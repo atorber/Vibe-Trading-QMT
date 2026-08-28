@@ -151,6 +151,8 @@ class TestEnvConfigDefaults:
         assert c.swarm.swarm_timeout == 1800
         assert c.swarm.swarm_heartbeat_interval_s == 3.0
         assert c.swarm.swarm_stream_retry_delay_s == 1.0
+        assert c.swarm.swarm_worker_retry_base_delay_s == 1.0
+        assert c.swarm.swarm_worker_retry_max_delay_s == 30.0
         assert c.swarm.swarm_grounding_max_symbols == 8
 
     def test_agent_tuning_defaults(self) -> None:

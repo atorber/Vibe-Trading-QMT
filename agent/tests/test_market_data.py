@@ -10,6 +10,7 @@ network-free logic: source detection, row capping, JSON-safety, and the
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import pandas as pd
@@ -532,6 +533,137 @@ def test_ca_venue_sibling_swaps_suffix_only() -> None:
     assert _ca_venue_sibling("AAPL.US") is None
     assert _ca_venue_sibling("local:HIVE.V") is None
     assert _ca_venue_sibling("BTC-USDT") is None
+
+
+# --------------------------------------------------------------------------
+# MARKET_DATA_ORDER_* overrides — auto routing honors the configured order,
+# while explicit sources, local: codes and the chain-provider test hook keep
+# their existing semantics.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def a_share_tushare_first():
+    """Apply a tushare-first A-share order override, restore defaults after.
+
+    Env is managed manually (not via monkeypatch): the fixture's own teardown
+    must scrub the var and refresh BEFORE monkeypatch's later undo, otherwise
+    the chains would stay overridden for subsequent tests.
+    """
+    from backtest.loaders import registry
+
+    os.environ["MARKET_DATA_ORDER_A_SHARE"] = (
+        "tushare,tencent,mootdx,eastmoney,baostock,akshare,local"
+    )
+    registry.refresh_source_order_overrides()
+    try:
+        yield
+    finally:
+        os.environ.pop("MARKET_DATA_ORDER_A_SHARE", None)
+        registry.refresh_source_order_overrides()
+
+
+def test_fetch_auto_respects_source_order_override_head(
+    a_share_tushare_first,
+) -> None:
+    """auto mode starts at the override's head (tushare), not the default's."""
+    from backtest.loaders.base import NoAvailableSourceError
+
+    attempts: list[str] = []
+
+    def resolver(src: str):
+        attempts.append(src)
+        if src == "tushare":
+            return _StubLoader
+        raise NoAvailableSourceError(f"{src} unavailable in test")
+
+    out = fetch_market_data(
+        codes=["600519.SH"],
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+        source="auto",
+        loader_resolver=resolver,
+    )
+    assert attempts[0] == "tushare"  # default head would be tencent
+    assert "_unresolved" not in out
+    assert "600519.SH" in out
+
+
+def test_fetch_explicit_source_stays_src_first_with_override(
+    a_share_tushare_first,
+) -> None:
+    """An explicit source= never gets reordered by the market's override."""
+    from backtest.loaders.base import NoAvailableSourceError
+
+    attempts: list[str] = []
+
+    def resolver(src: str):
+        attempts.append(src)
+        if src == "tencent":
+            return _StubLoader
+        raise NoAvailableSourceError(f"{src} unavailable in test")
+
+    out = fetch_market_data(
+        codes=["600519.SH"],
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+        source="tencent",
+        loader_resolver=resolver,
+    )
+    assert attempts[0] == "tencent"
+    assert "tushare" not in attempts
+    assert "600519.SH" in out
+
+
+def test_fetch_local_prefix_unaffected_by_override(
+    a_share_tushare_first,
+) -> None:
+    """local: codes keep the local entry point — no-network sources are
+    exempt from reordering."""
+    seen: list[str] = []
+
+    def resolver(src: str):
+        seen.append(src)
+        return _LocalAliasLoader
+
+    out = fetch_market_data(
+        codes=["local:600519.SH"],
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+        source="auto",
+        loader_resolver=resolver,
+    )
+    assert seen[0] == "local"
+    assert "_unresolved" not in out
+
+
+def test_fetch_chain_provider_hook_wins_over_override(
+    a_share_tushare_first,
+) -> None:
+    """The fallback_chain_provider test hook defines the chain; the override
+    must not leak its order in."""
+    from backtest.loaders.base import NoAvailableSourceError
+
+    attempts: list[str] = []
+
+    def resolver(src: str):
+        attempts.append(src)
+        if src == "eastmoney":
+            return _StubLoader
+        raise NoAvailableSourceError(f"{src} unavailable in test")
+
+    out = fetch_market_data(
+        codes=["600519.SH"],
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+        source="auto",
+        loader_resolver=resolver,
+        fallback_chain_provider=lambda src: ["eastmoney"],
+    )
+    # Detected source first, then the hook's chain — never the override order.
+    assert attempts[:2] == ["tencent", "eastmoney"]
+    assert "tushare" not in attempts
+    assert "600519.SH" in out
 
 
 # --------------------------------------------------------------------------

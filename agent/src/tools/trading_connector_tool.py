@@ -160,6 +160,19 @@ TRADING_COMMON_PARAMETERS = {
         "type": "integer",
         "description": "Optional local TWS/Gateway client id override for local profiles.",
     },
+    "market_type": {
+        "type": "string",
+        "enum": ["spot", "usdm"],
+        "description": (
+            "Optional Binance read market. USD-M is accepted only by the "
+            "live read-only Binance profile."
+        ),
+    },
+    "observation_absolute_tolerance": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Optional USD-M sequential-read coherence tolerance.",
+    },
     "account": {
         "type": "string",
         "description": "Optional account code filter when supported (IBKR account, QMT account_id / QMT_BRIDGE_ACCOUNT_ID).",
@@ -200,6 +213,11 @@ def _overrides(kwargs: dict[str, Any]) -> dict[str, Any]:
         "port": _int_or_none(kwargs.get("port"), "port"),
         "client_id": _int_or_none(kwargs.get("client_id"), "client_id"),
         "account": _connection(kwargs.get("account")),
+        "market_type": _connection(kwargs.get("market_type")),
+        "observation_absolute_tolerance": _num_or_none(
+            kwargs.get("observation_absolute_tolerance"),
+            "observation_absolute_tolerance",
+        ),
     }
 
 

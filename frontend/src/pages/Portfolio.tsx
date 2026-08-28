@@ -120,7 +120,7 @@ export function Portfolio() {
   const [history, setHistory] = useState<PortfolioHistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectingSource, setReconnectingSource] = useState<string | null>(null);
   const [refreshState, setRefreshState] = useState<PortfolioRefreshState | null>(null);
   const [portfolioSettings, setPortfolioSettings] = useState<PortfolioSettings | null>(null);
   const [sourceCatalog, setSourceCatalog] = useState<PortfolioSourceCatalogItem[]>([]);
@@ -185,15 +185,24 @@ export function Portfolio() {
   }
 
   async function reconnectSource(sourceId: string) {
-    setReconnecting(true);
+    setReconnectingSource(sourceId);
     setError(null);
     try {
       await api.reconnectPortfolioSource(sourceId);
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        const result = await api.getPortfolioReconnectStatus();
+        if (result.reconnect.running) continue;
+        if (result.reconnect.status !== "authorized") {
+          throw new Error(result.reconnect.error ?? "Account reconnect failed");
+        }
+        break;
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : t("portfolio.page.errorReconnect"));
     } finally {
-      setReconnecting(false);
+      setReconnectingSource(null);
     }
   }
 
@@ -320,7 +329,7 @@ export function Portfolio() {
             <button onClick={() => void download()} disabled={!snapshot} className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm disabled:opacity-50">
               <Download className="h-4 w-4" />{t("portfolio.page.exportCsv")}
             </button>
-            <button onClick={() => void refresh()} disabled={refreshing || reconnecting} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
+            <button onClick={() => void refresh()} disabled={refreshing || reconnectingSource !== null} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
               {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               {refreshing ? t("portfolio.page.refreshing") : t("portfolio.page.refreshAll")}
             </button>
@@ -391,7 +400,7 @@ export function Portfolio() {
               </div>
               <div className="grid gap-3 lg:grid-cols-3">
                 {snapshot.accounts.map((account) => (
-                  <AccountCard key={account.source_id ?? account.broker} account={account} active={sourceFilter === (account.source_id ?? account.broker)} displayCurrency={displayCurrency} onClick={() => { const id = account.source_id ?? account.broker; setSourceFilter((current) => current === id ? "all" : id); }} onReconnect={account.auth?.method === "OAuth" && account.source_id ? () => void reconnectSource(account.source_id!) : undefined} reconnecting={reconnecting} />
+                  <AccountCard key={account.source_id ?? account.broker} account={account} active={sourceFilter === (account.source_id ?? account.broker)} displayCurrency={displayCurrency} onClick={() => { const id = account.source_id ?? account.broker; setSourceFilter((current) => current === id ? "all" : id); }} onReconnect={account.auth?.method === "OAuth" && account.source_id ? () => void reconnectSource(account.source_id!) : undefined} reconnecting={reconnectingSource === account.source_id} reconnectDisabled={reconnectingSource !== null} />
                 ))}
               </div>
             </section>
@@ -490,7 +499,7 @@ function RefreshProgress({ state, settings }: { state: PortfolioRefreshState; se
  * it renders the failure, the error text and the last successful read time
  * instead of a value, so nothing on the card suggests it is part of the total.
  */
-function AccountCard({ account, active, displayCurrency, onClick, onReconnect, reconnecting }: { account: PortfolioAccount; active: boolean; displayCurrency: "USD" | "CNY"; onClick: () => void; onReconnect?: () => void; reconnecting: boolean }) {
+function AccountCard({ account, active, displayCurrency, onClick, onReconnect, reconnecting, reconnectDisabled }: { account: PortfolioAccount; active: boolean; displayCurrency: "USD" | "CNY"; onClick: () => void; onReconnect?: () => void; reconnecting: boolean; reconnectDisabled: boolean }) {
   const { t } = useTranslation();
   const failed = account.status === "error";
   return <div role="button" tabIndex={0} onClick={onClick} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onClick(); }} className={`cursor-pointer rounded-xl border bg-card p-5 transition ${active ? "border-primary ring-1 ring-primary/20" : "hover:border-primary/40"}`}>
@@ -511,7 +520,7 @@ function AccountCard({ account, active, displayCurrency, onClick, onReconnect, r
       </>
     )}
     {failed && account.error ? <p className="mt-3 line-clamp-2 text-xs text-muted-foreground" title={account.error}>{account.error}</p> : null}
-    {failed && onReconnect ? <button onClick={(event) => { event.stopPropagation(); onReconnect(); }} disabled={reconnecting} className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs disabled:opacity-50">{reconnecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}{t("portfolio.accounts.reconnect")}</button> : null}
+    {failed && onReconnect ? <button onClick={(event) => { event.stopPropagation(); onReconnect(); }} disabled={reconnectDisabled} className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs disabled:opacity-50">{reconnecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}{t("portfolio.accounts.reconnect")}</button> : null}
   </div>;
 }
 
