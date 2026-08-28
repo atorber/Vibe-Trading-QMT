@@ -5,6 +5,7 @@ import { ChevronDown } from "lucide-react";
 import type { PriceBar, TradeMarker, IndicatorPoint } from "@/lib/api";
 import { calcMA, calcBOLL, calcMACD, calcRSI, calcKDJ, calcEMA } from "@/lib/indicators";
 import { getChartTheme } from "@/lib/chart-theme";
+import { getMarketDirectionColors } from "@/lib/market-colors";
 import { abbreviateNum } from "@/lib/formatters";
 import { echarts, CHART_GROUP, connectCharts } from "@/lib/echarts";
 import { escapeHtml } from "@/lib/escapeHtml";
@@ -25,23 +26,142 @@ const OVERLAY_OPTIONS: { id: Overlay; label: string; group: string }[] = [
 ];
 
 const RANGE_BARS: Record<Range, number> = { "1M": 22, "3M": 63, "6M": 126, "1Y": 252, ALL: Infinity };
+const RANGE_I18N: Record<Range, string> = {
+  "1M": "charts.range1M",
+  "3M": "charts.range3M",
+  "6M": "charts.range6M",
+  "1Y": "charts.range1Y",
+  ALL: "charts.rangeAll",
+};
 const OVERLAY_COLORS = ["#f59e0b", "#8b5cf6", "#3b82f6", "#ec4899", "#10b981", "#f97316", "#6366f1"];
+
+function defaultRangeForPeriod(barPeriod?: string): Range {
+  switch (barPeriod) {
+    case "1d":
+      return "6M";
+    case "60m":
+      return "3M";
+    case "15m":
+    case "5m":
+    case "1m":
+      return "1M";
+    default:
+      return "6M";
+  }
+}
+
+function isIntradayPeriod(barPeriod?: string): boolean {
+  return Boolean(barPeriod && barPeriod !== "1d");
+}
+
+function formatMarketAxisLabel(value: string, intraday: boolean): string {
+  if (intraday) {
+    const timeMatch = value.match(/\b(\d{2}:\d{2})\b/);
+    if (timeMatch) return timeMatch[1];
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(5, 10);
+  if (value.length >= 10) return value.slice(5, 10);
+  return value;
+}
+
+function priceAxisDecimals(data: PriceBar[]): number {
+  const closes = data.map((d) => d.close).filter(Number.isFinite);
+  if (!closes.length) return 2;
+  const max = Math.max(...closes);
+  return max >= 100 ? 2 : 3;
+}
+
+/** Normalize QMT/Bridge bar times (epoch ms, YYYYMMDD, ISO) for chart axis labels. */
+export function formatChartBarTime(raw: string | number | null | undefined): string {
+  if (raw == null || raw === "") return "";
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const n = Math.trunc(raw);
+    if (n >= 1e12) {
+      const d = new Date(n);
+      if (Number.isNaN(d.getTime())) return String(raw);
+      const withTime = !(
+        (d.getHours() === 0 && d.getMinutes() === 0) ||
+        (d.getHours() === 15 && d.getMinutes() === 0)
+      );
+      return formatLocalDate(d, withTime);
+    }
+    if (n >= 1e9) {
+      const d = new Date(n * 1000);
+      if (Number.isNaN(d.getTime())) return String(raw);
+      const withTime = !(
+        (d.getHours() === 0 && d.getMinutes() === 0) ||
+        (d.getHours() === 15 && d.getMinutes() === 0)
+      );
+      return formatLocalDate(d, withTime);
+    }
+    const digits = String(n);
+    if (digits.length === 8) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+    if (digits.length === 14) {
+      return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)} ${digits.slice(8, 10)}:${digits.slice(10, 12)}`;
+    }
+    return digits;
+  }
+
+  const text = String(raw).trim();
+  if (/^\d{13}$/.test(text)) return formatChartBarTime(Number(text));
+  if (/^\d{10}$/.test(text)) return formatChartBarTime(Number(text));
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  if (/^\d{14}$/.test(text)) {
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}:${text.slice(10, 12)}`;
+  }
+  const normalized = text.replace("T", " ").replace(/\//g, "-");
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(normalized)) return normalized.slice(0, 16);
+  if (/^\d{4}-\d{2}-\d{2}/.test(normalized)) return normalized.slice(0, 10);
+  return text;
+}
+
+function formatLocalDate(d: Date, withTime: boolean) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  if (!withTime) return `${y}-${m}-${day}`;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${day} ${hh}:${mm}`;
+}
 
 interface Props {
   data: PriceBar[];
   markers?: TradeMarker[];
   indicators?: Record<string, IndicatorPoint[]>;
   height?: number;
+  /** A 股涨跌色：涨红跌绿（markets 等 A 股场景固定使用） */
+  cnDirection?: boolean;
+  /** 行情页模式：精简控件、默认缩放、中文 tooltip */
+  marketMode?: boolean;
+  /** 与 markets 周期联动：1d | 60m | 15m | 5m | 1m */
+  barPeriod?: string;
 }
 
-export function CandlestickChart({ data, markers, indicators, height = 500 }: Props) {
+export function CandlestickChart({
+  data,
+  markers,
+  indicators,
+  height = 500,
+  cnDirection = false,
+  marketMode = false,
+  barPeriod,
+}: Props) {
+  const useCnColors = cnDirection || marketMode;
+  const intraday = isIntradayPeriod(barPeriod);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof echarts.init> | null>(null);
   const [sub, setSub] = useState<Sub>("vol");
-  const [range, setRange] = useState<Range>("ALL");
-  const [overlays, setOverlays] = useState<Set<Overlay>>(new Set(["ma5", "ma20"]));
+  const [range, setRange] = useState<Range>(() => (marketMode ? defaultRangeForPeriod(barPeriod) : "ALL"));
+  const [overlays, setOverlays] = useState<Set<Overlay>>(
+    () => new Set(marketMode ? ["ma5", "ma10", "ma20"] : ["ma5", "ma20"]),
+  );
   const [showMenu, setShowMenu] = useState(false);
   const dark = useThemeDark();
+
+  useEffect(() => {
+    if (marketMode) setRange(defaultRangeForPeriod(barPeriod));
+  }, [marketMode, barPeriod]);
 
   const toggleOverlay = useCallback((id: Overlay) => {
     setOverlays(prev => {
@@ -53,7 +173,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
 
   // Memoize base data arrays — only recompute when raw data changes
   const baseData = useMemo(() => {
-    const dates = data.map(d => d.time);
+    const dates = data.map(d => formatChartBarTime(d.time));
     const closes = data.map(d => d.close);
     const highs = data.map(d => d.high);
     const lows = data.map(d => d.low);
@@ -115,8 +235,28 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
     const chart = chartRef.current;
     if (!chart || data.length === 0) return;
 
-    const t = getChartTheme();
+    const baseTheme = getChartTheme();
+    const direction = useCnColors ? getMarketDirectionColors() : baseTheme;
+    const t = useCnColors
+      ? {
+          ...baseTheme,
+          upColor: direction.upColor,
+          downColor: direction.downColor,
+          volumeUp: direction.volumeUp,
+          volumeDown: direction.volumeDown,
+        }
+      : baseTheme;
     const { dates, closes, opens, candle } = baseData;
+    const priceDecimals = marketMode ? priceAxisDecimals(data) : 2;
+    const ohlcLabels = marketMode
+      ? {
+          open: i18n.t("charts.ohlcOpen"),
+          high: i18n.t("charts.ohlcHigh"),
+          low: i18n.t("charts.ohlcLow"),
+          close: i18n.t("charts.ohlcClose"),
+          vol: i18n.t("charts.ohlcVol"),
+        }
+      : { open: "O", high: "H", low: "L", close: "C", vol: "Vol" };
 
     // Overlay series
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -214,9 +354,25 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
 
     chart.setOption({
       backgroundColor: "transparent",
+      animation: !marketMode,
+      axisPointer: {
+        type: "cross",
+        link: [{ xAxisIndex: [0, 1] }],
+        lineStyle: { color: t.axisColor, width: 1, type: "dashed" },
+        crossStyle: { color: t.axisColor, width: 1, type: "dashed" },
+        label: {
+          backgroundColor: t.tooltipBg,
+          borderColor: t.tooltipBorder,
+          color: t.tooltipText,
+          fontSize: 10,
+          padding: [2, 4],
+        },
+      },
       tooltip: {
-        trigger: "axis", axisPointer: { type: "cross" },
-        backgroundColor: t.tooltipBg, borderColor: t.tooltipBorder,
+        trigger: "axis",
+        axisPointer: { type: "cross" },
+        backgroundColor: t.tooltipBg,
+        borderColor: t.tooltipBorder,
         textStyle: { color: t.tooltipText, fontSize: 11 },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         formatter: (params: any) => {
@@ -228,41 +384,97 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
               const chg = close - open;
               const pct = open ? ((chg / open) * 100).toFixed(2) : "0.00";
               const clr = chg >= 0 ? t.upColor : t.downColor;
-              html += `<br/>O: ${open.toFixed(2)}&nbsp; H: ${high.toFixed(2)}`;
-              html += `<br/>L: ${low.toFixed(2)}&nbsp; C: <span style="color:${clr}"><b>${close.toFixed(2)}</b> ${chg >= 0 ? "+" : ""}${chg.toFixed(2)} (${chg >= 0 ? "+" : ""}${pct}%)</span>`;
+              html += `<br/>${ohlcLabels.open}: ${open.toFixed(priceDecimals)}&nbsp; ${ohlcLabels.high}: ${high.toFixed(priceDecimals)}`;
+              html += `<br/>${ohlcLabels.low}: ${low.toFixed(priceDecimals)}&nbsp; ${ohlcLabels.close}: <span style="color:${clr}"><b>${close.toFixed(priceDecimals)}</b> ${chg >= 0 ? "+" : ""}${chg.toFixed(2)} (${chg >= 0 ? "+" : ""}${pct}%)</span>`;
             } else if (p.seriesName === "Vol") {
-              html += `<br/>Vol: ${abbreviateNum(Number(p.value))}`;
+              html += `<br/>${ohlcLabels.vol}: ${abbreviateNum(Number(p.value))}`;
             } else if (p.value != null) {
-              html += `<br/>${p.marker} ${p.seriesName}: ${Number(p.value).toFixed(2)}`;
+              html += `<br/>${p.marker} ${p.seriesName}: ${Number(p.value).toFixed(priceDecimals)}`;
             }
           }
           return html;
         },
       },
-      toolbox: {
-        feature: { saveAsImage: { title: "Save" }, dataZoom: { title: { zoom: "Zoom", back: "Reset" } }, restore: { title: "Reset" } },
-        right: 8, top: 0, iconStyle: { borderColor: t.textColor },
+      toolbox: marketMode
+        ? undefined
+        : {
+            feature: { saveAsImage: { title: "Save" }, dataZoom: { title: { zoom: "Zoom", back: "Reset" } }, restore: { title: "Reset" } },
+            right: 8,
+            top: 0,
+            iconStyle: { borderColor: t.textColor },
+          },
+      legend: {
+        data: legendNames,
+        textStyle: { color: t.textColor, fontSize: 10 },
+        right: marketMode ? 4 : 80,
+        top: 2,
+        type: "scroll",
+        itemWidth: 12,
+        itemHeight: 8,
+        itemGap: 8,
       },
-      legend: { data: legendNames, textStyle: { color: t.textColor, fontSize: 10 }, right: 80, top: 2, type: "scroll", itemWidth: 12, itemHeight: 8, itemGap: 8 },
-      grid: [
-        { left: 8, right: 8, top: 36, height: "55%", containLabel: true },
-        { left: 8, right: 8, top: "66%", height: "22%", containLabel: true },
-      ],
+      grid: marketMode
+        ? [
+            { left: 4, right: 12, top: 28, height: "62%", containLabel: true },
+            { left: 4, right: 12, top: "72%", height: "20%", containLabel: true },
+          ]
+        : [
+            { left: 8, right: 8, top: 36, height: "55%", containLabel: true },
+            { left: 8, right: 8, top: "66%", height: "22%", containLabel: true },
+          ],
       xAxis: [
-        { type: "category", data: dates, gridIndex: 0, axisLine: { lineStyle: { color: t.axisColor } }, axisLabel: { color: t.textColor, fontSize: 10 }, boundaryGap: true },
-        { type: "category", data: dates, gridIndex: 1, axisLine: { lineStyle: { color: t.axisColor } }, axisLabel: { show: false }, boundaryGap: true },
+        {
+          type: "category",
+          data: dates,
+          gridIndex: 0,
+          axisLine: { lineStyle: { color: t.axisColor } },
+          axisLabel: {
+            color: t.textColor,
+            fontSize: 10,
+            hideOverlap: true,
+            formatter: marketMode ? (value: string) => formatMarketAxisLabel(value, intraday) : undefined,
+          },
+          axisTick: { show: !marketMode },
+          boundaryGap: true,
+        },
+        {
+          type: "category",
+          data: dates,
+          gridIndex: 1,
+          axisLine: { lineStyle: { color: t.axisColor } },
+          axisLabel: { show: false },
+          boundaryGap: true,
+        },
       ],
       yAxis: [
-        { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: t.gridColor } }, axisLabel: { color: t.textColor, fontSize: 10 } },
+        {
+          scale: true,
+          gridIndex: 0,
+          splitNumber: marketMode ? 4 : 5,
+          splitLine: { lineStyle: { color: t.gridColor } },
+          axisLabel: {
+            color: t.textColor,
+            fontSize: 10,
+            formatter: (value: number) => value.toFixed(priceDecimals),
+          },
+        },
         subYAxis,
       ],
-      dataZoom: [
-        { type: "inside", xAxisIndex: [0, 1], start: defaultStart, end: 100 },
-        { type: "slider", xAxisIndex: [0, 1], bottom: 4, height: 20, labelFormatter: (val: string) => val },
-      ],
+      dataZoom: marketMode
+        ? [{ type: "inside", xAxisIndex: [0, 1], start: defaultStart, end: 100 }]
+        : [
+            { type: "inside", xAxisIndex: [0, 1], start: defaultStart, end: 100 },
+            { type: "slider", xAxisIndex: [0, 1], bottom: 4, height: 20, labelFormatter: (val: string) => val },
+          ],
       series: [
         {
-          name: "K", type: "candlestick", data: candle, xAxisIndex: 0, yAxisIndex: 0,
+          name: "K",
+          type: "candlestick",
+          data: candle,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          barMaxWidth: marketMode ? 14 : 10,
+          barMinWidth: marketMode ? 2 : 1,
           itemStyle: { color: t.upColor, color0: t.downColor, borderColor: t.upColor, borderColor0: t.downColor },
           markPoint: marks.length > 0 ? { data: marks, symbolSize: 28, tooltip: { formatter: (p: { name?: string; value?: string }) => p.name || p.value || "" } } : undefined,
         },
@@ -271,60 +483,104 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
         ...subSeries,
       ],
     }, true);
-  }, [data, markers, baseData, indicatorCache, extraIndicators, sub, range, overlays, dark]);
+  }, [data, markers, baseData, indicatorCache, extraIndicators, sub, range, overlays, dark, useCnColors, marketMode, barPeriod, intraday]);
 
   if (data.length === 0) {
     return <div className="text-muted-foreground text-sm p-4">{i18n.t("charts.noPriceData")}</div>;
   }
 
+  const rangeOptions: Range[] = marketMode ? ["1M", "3M", "6M", "1Y", "ALL"] : ["1M", "3M", "6M", "1Y", "ALL"];
+  const subOptions: { id: Sub; label: string }[] = marketMode
+    ? [
+        { id: "vol", label: i18n.t("charts.subVol") },
+        { id: "macd", label: i18n.t("charts.subMacd") },
+        { id: "rsi", label: i18n.t("charts.subRsi") },
+        { id: "kdj", label: i18n.t("charts.subKdj") },
+      ]
+    : [
+        { id: "vol", label: "vol" },
+        { id: "macd", label: "macd" },
+        { id: "rsi", label: "rsi" },
+        { id: "kdj", label: "kdj" },
+      ];
+
   return (
     <div>
-      <div className="flex items-center gap-2 mb-1 flex-wrap">
+      <div className={cn("mb-1 flex flex-wrap items-center gap-2", marketMode && "rounded-lg border bg-muted/20 px-2 py-1.5")}>
         {/* Time range */}
         <div className="flex gap-0.5">
-          {(["1M", "3M", "6M", "1Y", "ALL"] as const).map((r) => (
-            <button key={r} onClick={() => setRange(r)} className={cn("px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors", range === r ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground/50 hover:text-muted-foreground")}>{r}</button>
+          {rangeOptions.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRange(r)}
+              className={cn(
+                "rounded px-2 py-0.5 text-[10px] font-medium tabular-nums transition-colors",
+                range === r
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground/60 hover:text-foreground",
+              )}
+            >
+              {marketMode ? i18n.t(RANGE_I18N[r]) : r}
+            </button>
           ))}
         </div>
 
-        <div className="w-px h-3 bg-border/40" />
+        <div className="h-3 w-px bg-border/40" />
 
         {/* Indicator dropdown */}
         <div className="relative">
           <button
+            type="button"
             onClick={() => setShowMenu(!showMenu)}
-            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
           >
-            Indicators ({overlays.size}) <ChevronDown className="h-3 w-3" />
+            {marketMode ? i18n.t("charts.indicators") : "Indicators"} ({overlays.size}) <ChevronDown className="h-3 w-3" />
           </button>
           {showMenu && (
-            <div className="absolute top-full left-0 mt-1 z-50 bg-card border rounded-lg shadow-lg p-2 min-w-[160px]" onMouseLeave={() => setShowMenu(false)}>
+            <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-lg border bg-card p-2 shadow-lg" onMouseLeave={() => setShowMenu(false)}>
               {["MA", "Channel"].map(group => (
                 <div key={group}>
-                  <p className="text-[9px] text-muted-foreground/50 uppercase tracking-wider px-1 pt-1">{group}</p>
+                  <p className="px-1 pt-1 text-[9px] uppercase tracking-wider text-muted-foreground/50">{group}</p>
                   {OVERLAY_OPTIONS.filter(o => o.group === group).map(o => (
-                    <label key={o.id} className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-muted/30 cursor-pointer">
+                    <label key={o.id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-muted/30">
                       <input type="checkbox" checked={overlays.has(o.id)} onChange={() => toggleOverlay(o.id)} className="h-3 w-3 rounded accent-primary" />
                       <span className="text-xs">{o.label}</span>
                     </label>
                   ))}
                 </div>
               ))}
-              <div className="border-t mt-1 pt-1">
-                <button onClick={() => { setOverlays(new Set()); setShowMenu(false); }} className="text-[10px] text-muted-foreground hover:text-foreground px-1 py-0.5 w-full text-left rounded hover:bg-muted/30">
-                  Bare K (clear all)
+              <div className="mt-1 border-t pt-1">
+                <button
+                  type="button"
+                  onClick={() => { setOverlays(new Set()); setShowMenu(false); }}
+                  className="w-full rounded px-1 py-0.5 text-left text-[10px] text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                >
+                  {marketMode ? i18n.t("charts.bareK") : "Bare K (clear all)"}
                 </button>
               </div>
             </div>
           )}
         </div>
 
-        <div className="w-px h-3 bg-border/40" />
+        <div className="h-3 w-px bg-border/40" />
 
         {/* Sub-chart selector */}
         <div className="flex gap-0.5">
-          {(["vol", "macd", "rsi", "kdj"] as const).map((id) => (
-            <button key={id} onClick={() => setSub(id)} className={cn("px-1.5 py-0.5 rounded text-[10px] font-mono uppercase transition-colors", sub === id ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground/50 hover:text-muted-foreground")}>{id}</button>
+          {subOptions.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setSub(id)}
+              className={cn(
+                "rounded px-2 py-0.5 text-[10px] font-medium uppercase transition-colors",
+                sub === id
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground/60 hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
           ))}
         </div>
       </div>

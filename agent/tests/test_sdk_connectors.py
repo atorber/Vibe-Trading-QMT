@@ -588,6 +588,21 @@ def test_futu_trd_env_mapping() -> None:
     assert ft.FutuConfig(profile="live-readonly").trd_env_name == "REAL"
 
 
+def test_futu_account_to_dict_splits_gross_and_net_from_debt_cash() -> None:
+    row = {
+        "total_assets": 152_909.6564,
+        "cash": -3_586.52,
+        "market_val": 156_496.1717,
+        "debt_cash": 22_533.9124353,
+        "currency": 1,
+    }
+    account = ft._account_to_dict(row)
+    assert account["currency"] == "HKD"
+    assert account["net_assets"] == 152_909.6564
+    assert account["gross_assets"] == pytest.approx(175_443.5688353, rel=1e-6)
+    assert account["total_debt"] == pytest.approx(22_533.9124353, rel=1e-6)
+
+
 def test_futu_classification() -> None:
     assert FUTU_TOOL_CLASS["place_order"] is ToolClass.WRITE
     assert FUTU_TOOL_CLASS["modify_order"] is ToolClass.WRITE
@@ -597,9 +612,12 @@ def test_futu_classification() -> None:
 
 def test_futu_service_unconfigured_gateway_down(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(ft, "get_runtime_root", lambda: tmp_path)
+    monkeypatch.setattr(ft, "tcp_port_open", lambda host, port, timeout=1.5: False)
     result = service.check_connection("futu-paper-sdk")
     # OpenD gateway is not running in CI → clean error, not a crash.
     assert result["status"] == "error"
+    assert result["connection_state"] == "error"
+    assert result["error_code"] == "network_unreachable"
     assert result["connector"] == "futu"
     assert result["transport"] == "broker_sdk"
 

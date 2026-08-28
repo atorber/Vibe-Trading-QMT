@@ -22,7 +22,8 @@ from src.portfolio.config import (
 from src.portfolio.normalization import (
     STABLECOINS,
     account_cash_usd,
-    account_total_usd,
+    account_gross_assets_usd,
+    account_net_assets_usd,
     auth_metadata,
     normalize_position,
     value_position,
@@ -260,7 +261,14 @@ class PortfolioService:
                 (_decimal(row.get("market_value_usd")) for row in broker_positions),
                 Decimal("0"),
             )
-            account_total = account_total_usd(
+            gross_total = account_gross_assets_usd(
+                broker,
+                result["account"],
+                usd_hkd,
+                usd_cny,
+                priced_total,
+            )
+            net_total = account_net_assets_usd(
                 broker,
                 result["account"],
                 usd_hkd,
@@ -268,16 +276,14 @@ class PortfolioService:
                 priced_total,
             )
             if broker == "binance":
-                account_total = priced_total
-            cash_total = min(
-                account_total,
-                account_cash_usd(broker, result["account"], usd_hkd, usd_cny),
+                gross_total = priced_total
+                net_total = priced_total
+            cash_reported = account_cash_usd(
+                broker, result["account"], usd_hkd, usd_cny
             )
-            if not source.include_cash:
-                account_total = max(Decimal("0"), account_total - cash_total)
-                cash_total = Decimal("0")
+            cash_total = cash_reported if source.include_cash else Decimal("0")
             unpriced_or_other = max(
-                Decimal("0"), account_total - priced_total - cash_total
+                Decimal("0"), gross_total - priced_total - cash_total
             )
             priced_count = sum(1 for row in broker_positions if row.get("priced"))
             accounts.append(
@@ -288,8 +294,11 @@ class PortfolioService:
                     "broker": broker,
                     "status": "ok",
                     "last_success_at": refreshed_at,
-                    "total_usd": _number(account_total),
-                    "total_cny": _number(account_total * usd_cny),
+                    "net_assets_usd": _number(net_total),
+                    "net_assets_cny": _number(net_total * usd_cny),
+                    "total_usd": _number(gross_total),
+                    "total_cny": _number(gross_total * usd_cny),
+                    "total_debt_usd": _number(max(Decimal("0"), gross_total - net_total)),
                     "priced_value_usd": _number(priced_total),
                     "cash_usd": _number(cash_total),
                     "unpriced_or_other_usd": _number(unpriced_or_other),
@@ -303,6 +312,9 @@ class PortfolioService:
 
         total_usd = sum(
             (_decimal(row.get("total_usd")) for row in accounts), Decimal("0")
+        )
+        net_assets_usd = sum(
+            (_decimal(row.get("net_assets_usd")) for row in accounts), Decimal("0")
         )
         # Every enabled source produces exactly one account row, so a snapshot
         # is complete only when none of them failed.
@@ -325,6 +337,10 @@ class PortfolioService:
             "complete": complete,
             "display_currency": settings.display_currency,
             "totals": {"usd": _number(total_usd), "cny": _number(total_usd * usd_cny)},
+            "net_assets": {
+                "usd": _number(net_assets_usd),
+                "cny": _number(net_assets_usd * usd_cny),
+            },
             "valuation": {
                 "priced_usd": _number(priced_usd),
                 "cash_usd": _number(cash_usd),
@@ -532,8 +548,10 @@ class PortfolioService:
             "quantity",
             "cost_price",
             "market_price",
+            "market_value",
             "market_value_usd",
             "market_value_cny",
+            "unrealized_pnl",
             "unrealized_pnl_usd",
             "priced",
             "updated_at",
@@ -689,11 +707,21 @@ class PortfolioService:
                 canonical = symbol
             region = (
                 "HK"
-                if currency == "HKD" or market == "HK" or symbol.endswith(".HK")
+                if currency == "HKD"
+                or market == "HK"
+                or symbol.endswith(".HK")
+                or symbol.startswith("HK.")
                 else (
-                    "CRYPTO"
-                    if row.get("asset_type") in {"crypto", "stablecoin"}
-                    else "US"
+                    "CN"
+                    if currency in {"CNY", "CNH"}
+                    or market in {"SH", "SZ", "CN"}
+                    or symbol.endswith((".SH", ".SZ", ".SS"))
+                    or symbol.startswith(("SH.", "SZ.", "CN."))
+                    else (
+                        "CRYPTO"
+                        if row.get("asset_type") in {"crypto", "stablecoin"}
+                        else "US"
+                    )
                 )
             )
             key = f"{region}:{canonical}"
@@ -733,6 +761,31 @@ class PortfolioService:
         return sorted(
             result, key=lambda row: _decimal(row["market_value_usd"]), reverse=True
         )
+
+    @staticmethod
+    def _enrich_position_names(broker: str, rows: list[dict[str, Any]]) -> None:
+        """Fill missing display names for connectors that omit them (e.g. QMT)."""
+        if broker != "qmt":
+            return
+        missing = [
+            str(row.get("symbol") or "").upper()
+            for row in rows
+            if str(row.get("name") or "") == str(row.get("symbol") or "")
+            and str(row.get("symbol") or "").strip()
+        ]
+        if not missing:
+            return
+        try:
+            from src.trading.connectors.qmt import sdk as qmt_sdk
+
+            names = qmt_sdk.get_batch_stock_names(missing)
+        except Exception:
+            return
+        for row in rows:
+            symbol = str(row.get("symbol") or "").upper()
+            name = names.get(symbol)
+            if name and name != symbol:
+                row["name"] = name
 
     def _collect_source(self, source: PortfolioSource) -> dict[str, Any]:
         """Read one source's account and positions, pricing what the connector omits.
@@ -784,6 +837,7 @@ class PortfolioService:
             normalize_position(broker, raw)
             for raw in positions_payload.get("positions", [])
         ]
+        self._enrich_position_names(broker, normalized_rows)
         for row in normalized_rows:
             row.update(
                 source_id=source.id,

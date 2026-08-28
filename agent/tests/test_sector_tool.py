@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from src.tools.sector_tool import SectorInfoTool
+from src.tools.sector_tool import SectorInfoTool, fetch_industry_peers
 
 _MEMBERSHIP_PAYLOAD = {
     "data": {
@@ -192,3 +192,42 @@ class TestErrorEnvelope:
             payload = json.loads(SectorInfoTool().execute(mode="ranking"))
         assert payload["ok"] is False
         assert "503" in payload["error"]
+
+
+_INDUSTRY_META_PAYLOAD = {
+    "data": {
+        "diff": [
+            {"f12": "603986", "f13": 1, "f14": "兆易创新"},
+            {"f12": "BK1036", "f13": 90, "f14": "半导体", "f3": 0.42},
+        ]
+    }
+}
+
+_PEER_LIST_PAYLOAD = {
+    "data": {
+        "diff": [
+            {"f12": "603986", "f13": 1, "f14": "兆易创新", "f2": 399.1, "f3": 1.2, "f6": 1.1e10},
+            {"f12": "688981", "f13": 1, "f14": "中芯国际", "f2": 88.0, "f3": 0.8, "f6": 2.2e10},
+            {"f12": "002371", "f13": 0, "f14": "北方华创", "f2": 320.0, "f3": -0.4, "f6": 1.8e10},
+        ]
+    }
+}
+
+
+class TestIndustryPeers:
+  def test_fetch_industry_peers_parses_board_constituents(self):
+      def fake_get(url: str, *, params: dict):
+          if "slist/get" in url:
+              return _INDUSTRY_META_PAYLOAD
+          assert params["fs"] == "b:BK1036"
+          return _PEER_LIST_PAYLOAD
+
+      with patch("src.tools.sector_tool.get_json", side_effect=fake_get):
+          payload = fetch_industry_peers("603986.SH", limit=5)
+
+      assert payload is not None
+      assert payload["industry"] == "半导体"
+      assert payload["board_code"] == "BK1036"
+      assert payload["target"]["symbol"] == "603986.SH"
+      assert len(payload["peers"]) == 2
+      assert payload["peers"][0]["symbol"] == "688981.SH"

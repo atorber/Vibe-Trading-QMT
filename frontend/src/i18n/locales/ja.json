@@ -1,4 +1,4 @@
-{
+﻿{
   "app": {
     "version": "v0.1.14"
   },
@@ -9,6 +9,7 @@
     "scheduled": "スケジュール",
     "reports": "レポート",
     "portfolio": "ポートフォリオ",
+    "markets": "マーケット",
     "alphaZoo": "アルファ・ライブラリ",
     "settings": "設定",
     "correlation": "相関行列",
@@ -1460,6 +1461,16 @@
     "error": "ファクター分析結果の読み込みに失敗しました",
     "noFactorData": "この実行には利用可能なファクター分析結果がありません。"
   },
+  "markets": {
+    "tabs": {
+      "overview": "概要",
+      "narratives": "ナラティブ",
+      "anomalies": "アノマリー",
+      "news": "ニュース",
+      "earnings": "決算",
+      "peers": "同業"
+    }
+  },
   "portfolio": {
     "page": {
       "badge": "ローカル読み取り専用 · 複数口座",
@@ -1484,7 +1495,7 @@
     "metrics": {
       "total": "総資産",
       "change": "本日の資産変動",
-      "changeNote": "相場変動と入出金を含みます",
+      "changeNote": "前日最終スナップショット比。相場変動と入出金を含みます",
       "coverage": "評価カバレッジ",
       "coverageNote": "評価済み {{priced}} · 現金 {{cash}}",
       "lastComplete": "最後の完全更新",

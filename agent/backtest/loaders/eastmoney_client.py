@@ -23,9 +23,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 
-from backtest.loaders._http import resolve_min_interval, throttled_get_json
+from backtest.loaders._http import DEFAULT_USER_AGENT, resolve_min_interval, throttled_get
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ logger = logging.getLogger(__name__)
 # a free-text ticker to its fully-qualified secid (needed for US tickers).
 _KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 _SEARCH_URL = "https://searchapi.eastmoney.com/api/suggest/get"
+_NEWS_SEARCH_URL = "https://search-api-web.eastmoney.com/search/jsonp"
 
 # Throttle/session bucket shared by all Eastmoney calls.
 _HOST_KEY = "eastmoney"
@@ -78,6 +82,21 @@ def _min_interval() -> float:
     return resolve_min_interval(_MIN_INTERVAL_ENV, _DEFAULT_MIN_INTERVAL)
 
 
+def _parse_json_or_jsonp(text: str) -> Any:
+    """Decode a JSON or JSONP response body."""
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("empty response body")
+    try:
+        return json.loads(stripped)
+    except (ValueError, TypeError):
+        pass
+    parsed = _strip_jsonp(stripped)
+    if parsed is not None:
+        return parsed
+    raise ValueError(f"response is not JSON or JSONP: {stripped[:200]!r}")
+
+
 def get_json(url: str, *, params: dict[str, Any]) -> Any:
     """Issue a throttled Eastmoney GET and decode the body as JSON.
 
@@ -94,12 +113,54 @@ def get_json(url: str, *, params: dict[str, Any]) -> Any:
         requests.HTTPError: Non-2xx response status.
         ValueError: Body is not valid JSON.
     """
-    return throttled_get_json(
+    response = throttled_get(
         url,
         host_key=_HOST_KEY,
         min_interval=_min_interval(),
         params=params,
     )
+    response.raise_for_status()
+    return _parse_json_or_jsonp(response.text)
+
+
+def get_news_search(param_obj: dict[str, Any]) -> dict[str, Any]:
+    """Fetch Eastmoney CMS news search results.
+
+    The news ``search/jsonp`` endpoint fingerprints ``requests`` and returns a
+    degraded JSONP stub without ``cmsArticleWebOld``. Stdlib ``urllib`` receives
+    the full JSON payload, so this path bypasses :func:`throttled_get` while
+    still honoring the shared Eastmoney throttle bucket.
+
+    Args:
+        param_obj: The ``param`` JSON object expected by the search API.
+
+    Returns:
+        The decoded top-level response object.
+
+    Raises:
+        urllib.error.URLError: Network failure.
+        urllib.error.HTTPError: Non-2xx HTTP status.
+        ValueError: Body empty or not parseable JSON/JSONP.
+    """
+    from backtest.loaders._http import _THROTTLE
+
+    param = json.dumps(param_obj, ensure_ascii=False, separators=(",", ":"))
+    qs = urllib.parse.urlencode({"cb": "", "param": param, "_": "0"})
+    url = f"{_NEWS_SEARCH_URL}?{qs}"
+    _THROTTLE.wait(_HOST_KEY, _min_interval())
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": "https://www.eastmoney.com/",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15.0) as resp:
+        text = resp.read().decode("utf-8", errors="replace")
+    decoded = _parse_json_or_jsonp(text)
+    if not isinstance(decoded, dict):
+        raise ValueError("invalid eastmoney news response")
+    return decoded
 
 
 def _resolve_a_share_secid(code: str, suffix: str) -> str | None:

@@ -121,7 +121,10 @@ class PortfolioStore:
         with self._connect() as db:
             rows = db.execute(
                 f"""
-                SELECT id, created_at, complete, total_usd, total_cny, payload
+                SELECT id, created_at, complete, total_usd, total_cny,
+                       json_extract(payload, '$.net_assets.usd') AS net_assets_usd,
+                       json_extract(payload, '$.net_assets.cny') AS net_assets_cny,
+                       payload
                 FROM portfolio_snapshots
                 {where}
                 ORDER BY created_at DESC LIMIT ?

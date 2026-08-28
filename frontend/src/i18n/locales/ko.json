@@ -9,6 +9,7 @@
     "scheduled": "예약",
     "reports": "리포트",
     "portfolio": "포트폴리오",
+    "markets": "시장",
     "alphaZoo": "알파 라이브러리",
     "settings": "설정",
     "correlation": "상관 행렬",
@@ -1460,6 +1461,16 @@
     "error": "팩터 분석 결과를 불러오지 못했습니다",
     "noFactorData": "이 실행에는 사용 가능한 팩터 분석 결과가 없습니다."
   },
+  "markets": {
+    "tabs": {
+      "overview": "개요",
+      "narratives": "내러티브",
+      "anomalies": "이상",
+      "news": "뉴스",
+      "earnings": "실적",
+      "peers": "동종"
+    }
+  },
   "portfolio": {
     "page": {
       "badge": "로컬 읽기 전용 · 다중 계좌",
@@ -1484,7 +1495,7 @@
     "metrics": {
       "total": "총자산",
       "change": "오늘의 자산 변동",
-      "changeNote": "시세 변동과 입출금이 포함됩니다",
+      "changeNote": "전일 마지막 스냅샷 대비. 시세 변동과 입출금 포함",
       "coverage": "평가 커버리지",
       "coverageNote": "평가 완료 {{priced}} · 현금 {{cash}}",
       "lastComplete": "마지막 완전 업데이트",

@@ -453,11 +453,138 @@ def test_generic_readonly_profile_uses_common_account_and_position_fields(tmp_pa
     account = snapshot["accounts"][0]
     position = snapshot["positions"][0]
     assert snapshot["display_currency"] == "CNY"
-    assert snapshot["totals"]["usd"] == 800.0
+    assert snapshot["totals"]["usd"] == 1000.0
+    assert snapshot["net_assets"]["usd"] == 1000.0
     assert account["source_id"] == "main-stocks"
+    assert account["net_assets_usd"] == 1000.0
+    assert account["total_usd"] == 1000.0
     assert account["cash_usd"] == 0.0
     assert position["source_label"] == "Main stocks"
     assert position["market_value_usd"] == 800.0
+
+
+def test_qmt_credit_account_splits_gross_and_net_assets(tmp_path):
+    settings = PortfolioSettingsStore(tmp_path / "portfolio.json")
+    settings.connection_store.ensure("qmt-credit", "qmt-live-sdk-readonly", "QMT Credit")
+    settings.save(
+        {
+            "display_currency": "USD",
+            "sources": [
+                {
+                    "connection_id": "qmt-credit",
+                    "label": "QMT Credit",
+                    "enabled": True,
+                    "order": 0,
+                    "include_cash": True,
+                }
+            ],
+        }
+    )
+    service = PortfolioService(
+        PortfolioStore(tmp_path / "portfolio.sqlite3"),
+        settings_store=settings,
+        get_account=lambda profile_id: {
+            "account": {
+                "currency": "CNY",
+                "total_asset": 1_200_000.0,
+                "gross_assets": 1_200_000.0,
+                "net_assets": 980_000.0,
+                "total_debt": 220_000.0,
+                "cash": 50_000.0,
+            },
+            "assets": [
+                {
+                    "currency": "CNY",
+                    "total_asset": 1_200_000.0,
+                    "gross_assets": 1_200_000.0,
+                    "net_assets": 980_000.0,
+                    "total_debt": 220_000.0,
+                    "cash": 50_000.0,
+                }
+            ],
+        },
+        get_positions=lambda profile_id: {"positions": []},
+        get_quote=lambda *args, **kwargs: {},
+        fx_fetcher=lambda: (
+            Decimal("7.2"),
+            Decimal("7.8"),
+            "2026-08-09T00:00:00+00:00",
+        ),
+    )
+
+    snapshot = service.refresh()
+    account = snapshot["accounts"][0]
+
+    assert snapshot["totals"]["usd"] == pytest.approx(1_200_000.0 / 7.2, rel=1e-6)
+    assert snapshot["net_assets"]["usd"] == pytest.approx(980_000.0 / 7.2, rel=1e-6)
+    assert account["total_usd"] == pytest.approx(1_200_000.0 / 7.2, rel=1e-6)
+    assert account["net_assets_usd"] == pytest.approx(980_000.0 / 7.2, rel=1e-6)
+    assert account["total_debt_usd"] == pytest.approx(220_000.0 / 7.2, rel=1e-6)
+
+
+def test_futu_margin_account_splits_gross_and_net_assets(tmp_path):
+    settings = PortfolioSettingsStore(tmp_path / "portfolio.json")
+    settings.connection_store.ensure(
+        "futu-margin", "futu-live-sdk-readonly", "Futu Margin"
+    )
+    settings.save(
+        {
+            "display_currency": "USD",
+            "sources": [
+                {
+                    "connection_id": "futu-margin",
+                    "label": "Futu Margin",
+                    "enabled": True,
+                    "order": 0,
+                    "include_cash": True,
+                }
+            ],
+        }
+    )
+    service = PortfolioService(
+        PortfolioStore(tmp_path / "portfolio.sqlite3"),
+        settings_store=settings,
+        get_account=lambda profile_id: {
+            "account": {
+                "currency": "HKD",
+                "total_assets": 152_909.6564,
+                "net_assets": 152_909.6564,
+                "gross_assets": 175_443.5688,
+                "total_debt": 22_533.9124,
+                "debt_cash": 22_533.9124,
+                "cash": -3_586.52,
+                "market_val": 156_496.1717,
+            },
+            "assets": [
+                {
+                    "currency": "HKD",
+                    "total_assets": 152_909.6564,
+                    "net_assets": 152_909.6564,
+                    "gross_assets": 175_443.5688,
+                    "total_debt": 22_533.9124,
+                    "debt_cash": 22_533.9124,
+                    "cash": -3_586.52,
+                    "market_val": 156_496.1717,
+                }
+            ],
+        },
+        get_positions=lambda profile_id: {"positions": []},
+        get_quote=lambda *args, **kwargs: {},
+        fx_fetcher=lambda: (
+            Decimal("7.2"),
+            Decimal("7.8"),
+            "2026-08-09T00:00:00+00:00",
+        ),
+    )
+
+    snapshot = service.refresh()
+    account = snapshot["accounts"][0]
+
+    assert snapshot["totals"]["usd"] == pytest.approx(175_443.5688 / 7.8, rel=1e-6)
+    assert snapshot["net_assets"]["usd"] == pytest.approx(152_909.6564 / 7.8, rel=1e-6)
+    assert account["total_usd"] == pytest.approx(175_443.5688 / 7.8, rel=1e-6)
+    assert account["net_assets_usd"] == pytest.approx(152_909.6564 / 7.8, rel=1e-6)
+    assert account["total_debt_usd"] == pytest.approx(22_533.9124 / 7.8, rel=1e-6)
 
 
 def test_auth_metadata_describes_the_profile_without_claiming_key_permissions():

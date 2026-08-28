@@ -22,8 +22,8 @@ function isChinese(): boolean {
 let _cache: ReturnType<typeof buildTheme> | null = null;
 let _cacheKey = "";
 
-function buildTheme() {
-  const cn = isChinese();
+function buildTheme(forceCnDirection = false) {
+  const cn = forceCnDirection || isChinese();
   const isDark = document.documentElement.classList.contains("dark");
 
   const successHex = hslToHex(css("--success")) || "#22c55e";
@@ -56,10 +56,11 @@ function buildTheme() {
   };
 }
 
-export function getChartTheme() {
-  const key = `${document.documentElement.className}|${document.documentElement.lang || navigator.language}`;
+export function getChartTheme(opts?: { cnDirection?: boolean }) {
+  const forceCn = Boolean(opts?.cnDirection);
+  const key = `${document.documentElement.className}|${document.documentElement.lang || navigator.language}|${forceCn ? "cn" : ""}`;
   if (_cache && _cacheKey === key) return _cache;
-  _cache = buildTheme();
+  _cache = buildTheme(forceCn);
   _cacheKey = key;
   return _cache;
 }

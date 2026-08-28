@@ -75,8 +75,12 @@ export interface PortfolioPosition {
   quantity: number;
   cost_price?: number | null;
   market_price?: number | null;
+  /** Native-market market value in `currency`. */
+  market_value?: number | null;
   market_value_usd: number;
   market_value_cny: number;
+  /** Native-market unrealized P/L in `currency`. */
+  unrealized_pnl?: number | null;
   unrealized_pnl_usd?: number | null;
   priced: boolean;
   updated_at: string;
@@ -101,6 +105,8 @@ export interface PortfolioAccount {
   last_success_at?: string;
   total_usd?: number | null;
   total_cny?: number | null;
+  net_assets_usd?: number | null;
+  net_assets_cny?: number | null;
   priced_value_usd?: number;
   cash_usd?: number;
   unpriced_or_other_usd?: number;
@@ -124,6 +130,7 @@ export interface PortfolioSnapshot {
   complete: boolean;
   display_currency?: "USD" | "CNY";
   totals: { usd: number; cny: number };
+  net_assets?: { usd: number; cny: number };
   valuation?: {
     priced_usd: number;
     cash_usd: number;
@@ -136,6 +143,7 @@ export interface PortfolioSnapshot {
   combined_holdings?: Array<{
     symbol: string;
     market_value_usd: number;
+    market_value_cny?: number;
     asset_type?: string;
     brokers?: string[];
     unrealized_pnl_usd?: number;
@@ -150,6 +158,148 @@ export interface PortfolioHistoryPoint {
   complete: number;
   total_usd: string;
   total_cny: string;
+  net_assets_usd?: string | null;
+  net_assets_cny?: string | null;
+}
+
+export interface MarketQuote {
+  symbol: string;
+  name: string;
+  last: number | null;
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
+  prev_close?: number | null;
+  change?: number | null;
+  change_pct?: number | null;
+  volume?: number | null;
+  amount?: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  updated_at?: string | null;
+}
+
+export interface MarketsOverviewResponse {
+  status: string;
+  source: string;
+  query?: string | null;
+  indices: MarketQuote[];
+  quotes: MarketQuote[];
+  watchlist?: string[] | null;
+}
+
+export interface MarketWatchlistItem {
+  symbol: string;
+  name?: string | null;
+}
+
+export interface MarketWatchlistResponse {
+  status: string;
+  symbols: MarketWatchlistItem[];
+}
+
+export interface MarketDetailResponse {
+  status: string;
+  source: string;
+  symbol: string;
+  name: string;
+  market: string;
+  sector?: string;
+  quote: MarketQuote;
+  instrument: {
+    exchange?: string | null;
+    product?: string | null;
+    listed_date?: string | null;
+    currency?: string;
+  };
+  bars: PriceBar[];
+  period: string;
+  downloaded?: boolean;
+  download_status?: unknown;
+}
+
+export interface MarketNewsArticle {
+  title: string;
+  url?: string | null;
+  source?: string | null;
+  published?: string | null;
+  snippet?: string | null;
+}
+
+export interface MarketNewsResponse {
+  status: string;
+  symbol: string;
+  source?: string;
+  market?: string;
+  articles: MarketNewsArticle[];
+}
+
+export interface MarketEarningsReport {
+  title: string;
+  brokerage?: string | null;
+  analyst?: string | null;
+  publish_date?: string | null;
+  rating?: string | null;
+  eps_forecast?: {
+    this_year?: number | null;
+    next_year?: number | null;
+  };
+  pe_forecast?: {
+    this_year?: number | null;
+    next_year?: number | null;
+  };
+}
+
+export interface MarketConsensusEps {
+  fiscal_year: string | number;
+  consensus_eps?: number | null;
+}
+
+export interface MarketEarningsResponse {
+  status: string;
+  symbol: string;
+  source?: string;
+  reports: MarketEarningsReport[];
+  consensus_eps: MarketConsensusEps[];
+}
+
+export interface MarketPeerQuote {
+  symbol: string;
+  name: string;
+  price?: number | null;
+  change_pct?: number | null;
+  amount?: number | null;
+}
+
+export interface MarketPeersResponse {
+  status: string;
+  source?: string;
+  code: string;
+  industry: string;
+  board_code: string;
+  board_change_pct?: number | null;
+  target?: MarketPeerQuote | null;
+  peers: MarketPeerQuote[];
+}
+
+export type MarketAssessmentStance = "bullish" | "neutral" | "bearish" | "mixed";
+export type MarketAssessmentConfidence = "high" | "medium" | "low";
+
+export interface MarketAssessmentResponse {
+  status: string;
+  symbol: string;
+  name: string;
+  source: "llm" | "rules";
+  fallback: boolean;
+  fallback_reason?: string | null;
+  stance: MarketAssessmentStance;
+  headline: string;
+  summary: string;
+  drivers: string[];
+  risks: string[];
+  catalysts: string[];
+  confidence: MarketAssessmentConfidence;
+  evidence?: Record<string, unknown>;
 }
 
 export interface PortfolioRefreshState {
@@ -328,6 +478,45 @@ export const api = {
       `/correlation/regime?codes=${encodeURIComponent(codes)}&days=${encodeURIComponent(String(days))}`,
     ),
   getPortfolio: () => request<{ status: string; snapshot: PortfolioSnapshot | null }>("/api/portfolio"),
+  getMarkets: (q?: string, limit = 20) =>
+    request<MarketsOverviewResponse>(
+      `/api/markets${q?.trim() ? `?q=${encodeURIComponent(q.trim())}&limit=${limit}` : `?limit=${limit}`}`,
+    ),
+  getMarketsWatchlist: () => request<MarketWatchlistResponse>("/api/markets/watchlist"),
+  putMarketsWatchlist: (symbols: MarketWatchlistItem[]) =>
+    request<MarketWatchlistResponse>("/api/markets/watchlist", {
+      method: "PUT",
+      body: JSON.stringify({ symbols }),
+    }),
+  addMarketsWatchlist: (symbol: string, name?: string) =>
+    request<MarketWatchlistResponse>("/api/markets/watchlist", {
+      method: "POST",
+      body: JSON.stringify({ symbol, name: name ?? null }),
+    }),
+  removeMarketsWatchlist: (symbol: string) =>
+    request<MarketWatchlistResponse>(`/api/markets/watchlist/${encodeURIComponent(symbol)}`, {
+      method: "DELETE",
+    }),
+  getMarketDetail: (symbol: string, period = "1d", limit = 180) =>
+    request<MarketDetailResponse>(
+      `/api/markets/${encodeURIComponent(symbol)}?period=${encodeURIComponent(period)}&limit=${encodeURIComponent(String(limit))}`,
+    ),
+  getMarketNews: (symbol: string, limit = 20) =>
+    request<MarketNewsResponse>(
+      `/api/markets/${encodeURIComponent(symbol)}/news?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  getMarketEarnings: (symbol: string, limit = 15) =>
+    request<MarketEarningsResponse>(
+      `/api/markets/${encodeURIComponent(symbol)}/earnings?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  getMarketPeers: (symbol: string, limit = 8) =>
+    request<MarketPeersResponse>(
+      `/api/markets/${encodeURIComponent(symbol)}/peers?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  generateMarketAssessment: (symbol: string) =>
+    request<MarketAssessmentResponse>(`/api/markets/${encodeURIComponent(symbol)}/assessment`, {
+      method: "POST",
+    }),
   refreshPortfolio: () => request<{ status: string; snapshot: PortfolioSnapshot }>("/api/portfolio/refresh", { method: "POST" }),
   getPortfolioRefreshStatus: () => request<{ status: string; refresh: PortfolioRefreshState }>("/api/portfolio/refresh-status"),
   reconnectPortfolioSource: (sourceId: string) =>

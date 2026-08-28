@@ -17,6 +17,8 @@ const PROXY_PATHS = [
   "/shadow-reports",
   "/scheduled-runs",
   "/options",
+  // Portfolio dashboard + local broker connections (/api/portfolio, /api/connections)
+  "/api",
 ];
 
 export default defineConfig(({ mode }) => {

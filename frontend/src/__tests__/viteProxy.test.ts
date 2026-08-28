@@ -18,4 +18,8 @@ describe("Vite API proxy config", () => {
   it("proxies authentication endpoints", () => {
     expect(config).toContain('"/auth"');
   });
+
+  it("proxies portfolio and connection API endpoints", () => {
+    expect(config).toContain('"/api"');
+  });
 });

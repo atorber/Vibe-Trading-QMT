@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import socket
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping
@@ -224,7 +225,8 @@ def check_status(config: FutuConfig | None = None) -> dict[str, Any]:
 
     Returns a JSON-serializable health report that degrades cleanly when the
     OpenD gateway is not running or ``futu-api`` is not installed. Does not place
-    or mutate any broker state.
+    or mutate any broker state. The envelope matches ``GET /live/status`` so the
+    Runtime page can show connected / error instead of a blank unavailable state.
 
     Args:
         config: Optional target config; loaded from disk when omitted.
@@ -233,41 +235,64 @@ def check_status(config: FutuConfig | None = None) -> dict[str, Any]:
         A health report dict.
     """
     cfg = config or load_config()
+    has_runtime_file = config_path().exists()
     report: dict[str, Any] = {
         "status": "ok",
+        "configured": True,
+        "credential_source": "runtime_file" if has_runtime_file else None,
+        "connection_state": "connected",
+        "error_code": None,
+        "error": None,
         "config": _public_config(cfg),
         "sdk": {"package": "futu-api", "installed": futu_available()},
+        "sdk_installed": futu_available(),
         "paper_guard": "trd_env_acc_list",
+        "environment_identity": "trd_env_acc_list",
         "trd_env": cfg.trd_env_name,
     }
 
     gateway_open = tcp_port_open(cfg.host, cfg.port)
     report["gateway"] = {"host": cfg.host, "port": cfg.port, "open": gateway_open}
     if not gateway_open:
-        report["status"] = "error"
-        report["error"] = (
-            f"No Futu OpenD gateway is listening at {cfg.host}:{cfg.port}. "
-            "Start OpenD, log in, and confirm the API port."
+        return _status_error(
+            report,
+            "network_unreachable",
+            (
+                f"No Futu OpenD gateway is listening at {cfg.host}:{cfg.port}. "
+                "Start Futu_OpenD (GUI), log in, and confirm the API port."
+            ),
         )
-        return report
 
-    if not report["sdk"]["installed"]:
-        report["status"] = "error"
-        report["error"] = "Optional dependency missing: install with `pip install futu-api`."
-        return report
+    if not report["sdk_installed"]:
+        return _status_error(
+            report,
+            "sdk_missing",
+            "Optional dependency missing: install with `pip install futu-api`.",
+        )
 
     try:
         snapshot = get_account_snapshot(cfg)
     except Exception as exc:  # noqa: BLE001 - health endpoint reports cleanly
-        report["status"] = "error"
-        report["error"] = str(exc)
-        return report
+        return _status_error(report, "broker_error", str(exc))
 
     report["account"] = {
         "profile": cfg.profile,
         "trd_env": cfg.trd_env_name,
         "acc_id": snapshot.get("acc_id"),
     }
+    report["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+    return report
+
+
+def _status_error(report: dict[str, Any], code: str, message: str) -> dict[str, Any]:
+    """Fill a fail-closed Runtime verify envelope without leaking secrets."""
+    report.update(
+        status="error",
+        connection_state="error",
+        error_code=code,
+        error=message,
+        last_checked_at=datetime.now(timezone.utc).isoformat(),
+    )
     return report
 
 
@@ -288,12 +313,14 @@ def get_account_snapshot(config: FutuConfig | None = None) -> dict[str, Any]:
                 "assets": [],
             }
         rows = _records(_unwrap(result))
+        assets = [_account_to_dict(row) for row in rows]
         return {
             "status": "ok",
             "profile": cfg.profile,
             "trd_env": cfg.trd_env_name,
             "acc_id": acc_id,
-            "assets": [_account_to_dict(row) for row in rows],
+            "account": dict(assets[0]) if assets else {},
+            "assets": assets,
         }
     finally:
         _close(trade_ctx)
@@ -1163,30 +1190,117 @@ def _acc_id_of(row: Mapping[str, Any]) -> int:
         return 0
 
 
+#: Futu ``Currency`` enum → ISO code (accinfo_query returns ints).
+_FUTU_CURRENCY_CODES: dict[int, str] = {
+    1: "HKD",
+    2: "USD",
+    3: "CNH",
+    4: "JPY",
+    5: "SGD",
+    6: "AUD",
+    7: "CAD",
+    8: "MYR",
+}
+
+
+def _num(value: Any) -> float | int | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number.is_integer():
+        return int(number)
+    return number
+
+
+def _futu_currency(row: Mapping[str, Any]) -> str:
+    raw = _first(row, ("currency",))
+    if raw is None:
+        return ""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return _FUTU_CURRENCY_CODES.get(int(raw), "")
+    text = str(raw).strip().upper()
+    if text.isdigit():
+        return _FUTU_CURRENCY_CODES.get(int(text), "")
+    if text in {"", "N/A", "NONE"}:
+        return ""
+    return text
+
+
+def _futu_financing_debt(row: Mapping[str, Any]) -> float:
+    """融资负债：优先 debt_cash / 计息金额，负现金仅作兜底。"""
+    for key in ("total_debt", "debt_cash", "debtCash", "interest_charged_amount"):
+        value = _num(_first(row, (key,)))
+        if value is not None and value > 0:
+            return float(value)
+    cash = _num(_first(row, ("cash",)))
+    if cash is not None and cash < 0:
+        return abs(float(cash))
+    return 0.0
+
+
 def _account_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    currency = _futu_currency(row)
+    total_assets = _num(_first(row, ("total_assets", "totalAssets")))
+    debt = _futu_financing_debt(row)
+    net_assets = total_assets
+    gross_assets = (
+        (float(total_assets) + debt)
+        if total_assets is not None and debt > 0
+        else total_assets
+    )
     return {
         "power": _first(row, ("power",)),
-        "total_assets": _first(row, ("total_assets",)),
-        "cash": _first(row, ("cash",)),
-        "market_val": _first(row, ("market_val",)),
-        "available_funds": _first(row, ("available_funds",)),
-        "securities_assets": _first(row, ("securities_assets",)),
-        "currency": str(_first(row, ("currency",), "") or "").upper(),
+        "total_assets": total_assets,
+        "net_assets": net_assets,
+        "gross_assets": gross_assets,
+        "total_debt": debt if debt > 0 else None,
+        "cash": _num(_first(row, ("cash",))),
+        "market_val": _num(_first(row, ("market_val", "marketVal"))),
+        "long_mv": _num(_first(row, ("long_mv", "longMv"))),
+        "short_mv": _num(_first(row, ("short_mv", "shortMv"))),
+        "pending_asset": _num(_first(row, ("pending_asset", "pendingAsset"))),
+        "fund_assets": _num(_first(row, ("fund_assets", "fundAssets"))),
+        "bond_assets": _num(_first(row, ("bond_assets", "bondAssets"))),
+        "available_funds": _first(row, ("available_funds", "availableFunds")),
+        "securities_assets": _num(_first(row, ("securities_assets", "securitiesAssets"))),
+        "debt_cash": _num(_first(row, ("debt_cash", "debtCash"))),
+        "interest_charged_amount": _num(
+            _first(row, ("interest_charged_amount", "interestChargedAmount"))
+        ),
+        "initial_margin": _num(_first(row, ("initial_margin", "initialMargin"))),
+        "maintenance_margin": _num(
+            _first(row, ("maintenance_margin", "maintenanceMargin"))
+        ),
+        "currency": currency or None,
     }
 
 
 def _position_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    code = str(_first(row, ("code",), "") or "").upper()
+    currency = str(_first(row, ("currency",), "") or "").upper()
+    if currency in {"", "N/A", "NONE"}:
+        currency = ""
+    market = str(_first(row, ("position_market", "market"), "") or "").upper()
+    if market in {"", "N/A", "NONE"}:
+        market = code.split(".", 1)[0] if "." in code else ""
     return {
-        "code": _first(row, ("code",)),
+        "code": code,
+        "symbol": code,
+        "name": _first(row, ("stock_name", "name")),
         "qty": _first(row, ("qty",)),
         "can_sell_qty": _first(row, ("can_sell_qty",)),
         "cost_price": _first(row, ("cost_price",)),
+        "market_price": _first(row, ("nominal_price", "market_price")),
         "market_val": _first(row, ("market_val",)),
         "pl_ratio": _first(row, ("pl_ratio",)),
         "pl_val": _first(row, ("pl_val",)),
+        "unrealized_pnl": _first(row, ("unrealized_pl", "pl_val")),
         "position_side": str(_first(row, ("position_side",), "")),
-        "market": str(_first(row, ("position_market",), "") or "").upper(),
-        "currency": str(_first(row, ("currency",), "") or "").upper(),
+        "currency": currency or None,
+        "market": market or None,
     }
 
 

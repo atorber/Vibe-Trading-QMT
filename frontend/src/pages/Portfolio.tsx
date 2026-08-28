@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   CheckCircle2,
+  CircleHelp,
   Clock3,
   Database,
   Download,
@@ -16,10 +17,12 @@ import {
   WifiOff,
 } from "lucide-react";
 import { PortfolioSourceEditor } from "@/components/portfolio/PortfolioSourceEditor";
+import { marketChangeTextClass } from "@/lib/market-colors";
 import {
   api,
   type PortfolioAccount,
   type PortfolioHistoryPoint,
+  type PortfolioPosition,
   type PortfolioRefreshState,
   type PortfolioSettings,
   type PortfolioSnapshot,
@@ -52,13 +55,18 @@ function uiLocale(): string {
   return i18n.language || "en";
 }
 
-function money(value: number | null | undefined, currency: "USD" | "CNY" = "USD") {
+function money(value: number | null | undefined, currency: string = "USD") {
   if (value == null || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat(uiLocale(), {
-    style: "currency",
-    currency,
-    maximumFractionDigits: currency === "USD" ? 2 : 0,
-  }).format(value);
+  const code = normalizeCurrency(currency);
+  try {
+    return new Intl.NumberFormat(uiLocale(), {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: code === "CNY" || code === "JPY" ? 0 : 2,
+    }).format(value);
+  } catch {
+    return `${code} ${value.toLocaleString(uiLocale())}`;
+  }
 }
 
 function quantity(value: number | null | undefined) {
@@ -66,12 +74,68 @@ function quantity(value: number | null | undefined) {
   return new Intl.NumberFormat(uiLocale(), { maximumFractionDigits: 8 }).format(value);
 }
 
-function price(value: number | undefined | null) {
+function price(value: number | undefined | null, currency: string = "USD") {
   if (value == null || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat(uiLocale(), {
-    minimumFractionDigits: value >= 1 ? 2 : 4,
-    maximumFractionDigits: value >= 100 ? 2 : value >= 1 ? 4 : 8,
-  }).format(value);
+  const code = normalizeCurrency(currency);
+  try {
+    return new Intl.NumberFormat(uiLocale(), {
+      style: "currency",
+      currency: code,
+      minimumFractionDigits: value >= 1 ? 2 : 4,
+      maximumFractionDigits: value >= 100 ? 2 : value >= 1 ? 4 : 8,
+    }).format(value);
+  } catch {
+    return `${code} ${value.toLocaleString(uiLocale())}`;
+  }
+}
+
+function normalizeCurrency(code: string | null | undefined): string {
+  const upper = String(code || "USD").toUpperCase();
+  return upper === "CNH" ? "CNY" : upper;
+}
+
+/** Instrument settlement currency (USD / HKD / CNY), never a display preference. */
+function nativeCurrencyOf(row: { currency?: string | null }): string {
+  return normalizeCurrency(row.currency);
+}
+
+/**
+ * Market value in the instrument's own currency.
+ *
+ * Never falls back to a cross-currency total (e.g. CNY amount labeled USD),
+ * which is what made the holdings table look like a 1:1 FX rate.
+ */
+function nativeMarketValue(row: PortfolioPosition): number | null {
+  if (row.market_value != null && Number.isFinite(row.market_value)) return row.market_value;
+  if (
+    row.market_price != null
+    && row.quantity != null
+    && Number.isFinite(row.market_price)
+    && Number.isFinite(row.quantity)
+  ) {
+    return row.market_price * row.quantity;
+  }
+  const ccy = nativeCurrencyOf(row);
+  if (ccy === "USD" && Number.isFinite(row.market_value_usd)) return row.market_value_usd;
+  if (ccy === "CNY" && Number.isFinite(row.market_value_cny)) return row.market_value_cny;
+  return null;
+}
+
+function displayMarketValue(
+  row: PortfolioPosition,
+  displayCurrency: "USD" | "CNY",
+): number | null {
+  const value = displayCurrency === "CNY" ? row.market_value_cny : row.market_value_usd;
+  return value != null && Number.isFinite(value) ? value : null;
+}
+
+function nativePnl(row: PortfolioPosition): number | null {
+  if (row.unrealized_pnl != null && Number.isFinite(row.unrealized_pnl)) return row.unrealized_pnl;
+  const ccy = nativeCurrencyOf(row);
+  if (ccy === "USD" && row.unrealized_pnl_usd != null && Number.isFinite(row.unrealized_pnl_usd)) {
+    return row.unrealized_pnl_usd;
+  }
+  return null;
 }
 
 function percentage(value: number | null | undefined) {
@@ -88,14 +152,18 @@ function slicePercentage(percent: number) {
   return percentage(percent / 100);
 }
 
-/** Compact USD tick label for the history axis, e.g. "$120K" / "1,2 Mio. $". */
-function compactUsd(value: number) {
+/** Compact currency tick label for the history axis, e.g. "$120K" / "¥120万". */
+function compactMoney(value: number, currency: "USD" | "CNY" = "USD") {
   return new Intl.NumberFormat(uiLocale(), {
     style: "currency",
-    currency: "USD",
+    currency,
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+function signedMoney(value: number, currency: "USD" | "CNY" = "USD") {
+  return `${value >= 0 ? "+" : ""}${money(value, currency)}`;
 }
 
 function dateTime(value: string | undefined) {
@@ -105,6 +173,37 @@ function dateTime(value: string | undefined) {
 function dayKey(value: string) {
   const date = new Date(value);
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function prevDayKey(value: string) {
+  const date = new Date(value);
+  date.setDate(date.getDate() - 1);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function netAssetsAmount(
+  netAssets: { usd: number; cny: number } | undefined,
+  totals: { usd: number; cny: number },
+  displayCurrency: "USD" | "CNY",
+) {
+  if (displayCurrency === "CNY") {
+    return netAssets?.cny ?? totals.cny;
+  }
+  return netAssets?.usd ?? totals.usd;
+}
+
+function historyNetAssets(row: PortfolioHistoryPoint, displayCurrency: "USD" | "CNY") {
+  if (displayCurrency === "CNY") {
+    return Number(row.net_assets_cny ?? row.total_cny);
+  }
+  return Number(row.net_assets_usd ?? row.total_usd);
+}
+
+function historyTotals(row: PortfolioHistoryPoint, displayCurrency: "USD" | "CNY") {
+  if (displayCurrency === "CNY") {
+    return Number(row.total_cny);
+  }
+  return Number(row.total_usd);
 }
 
 /**
@@ -249,14 +348,25 @@ export function Portfolio() {
 
   useEffect(() => { void load(); }, []);
 
+  const displayCurrency = portfolioSettings?.display_currency ?? snapshot?.display_currency ?? "USD";
+  const fxRate = snapshot?.fx.usd_cny ?? 0;
+  const toDisplay = (usd: number | null | undefined) => {
+    if (usd == null || !Number.isFinite(usd)) return null;
+    return displayCurrency === "CNY" ? usd * fxRate : usd;
+  };
+
   const positions = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return [...(snapshot?.positions ?? [])]
       .filter((row) => sourceFilter === "all" || (row.source_id ?? row.broker) === sourceFilter)
       .filter((row) => !needle || [row.broker, row.symbol, row.name, row.asset_type, row.market]
         .join(" ").toLowerCase().includes(needle))
-      .sort((a, b) => (b.market_value_usd ?? 0) - (a.market_value_usd ?? 0));
-  }, [snapshot, query, sourceFilter]);
+      .sort((a, b) => {
+        const left = displayCurrency === "CNY" ? (a.market_value_cny ?? 0) : (a.market_value_usd ?? 0);
+        const right = displayCurrency === "CNY" ? (b.market_value_cny ?? 0) : (b.market_value_usd ?? 0);
+        return right - left;
+      });
+  }, [snapshot, query, sourceFilter, displayCurrency]);
 
   const failedAccounts = useMemo(
     () => (snapshot?.accounts ?? []).filter((row) => row.status === "error"),
@@ -264,46 +374,71 @@ export function Portfolio() {
   );
 
   const brokerAllocation = useMemo(() => (snapshot?.accounts ?? [])
-    .filter((row) => row.status !== "error" && (row.total_usd ?? 0) > 0)
+    .filter((row) => row.status !== "error" && ((row.total_usd ?? 0) > 0))
     .map((row) => ({
       id: row.source_id ?? row.broker,
       name: row.label ?? row.broker.toUpperCase(),
-      value: row.total_usd ?? 0,
+      value: displayCurrency === "CNY" ? (row.total_cny ?? 0) : (row.total_usd ?? 0),
       connector: row.broker,
-    })), [snapshot]);
+    })), [snapshot, displayCurrency]);
 
   const holdingAllocation = useMemo(() => {
+    const valueOf = (row: { market_value_usd: number; market_value_cny?: number }) =>
+      displayCurrency === "CNY" ? (row.market_value_cny ?? row.market_value_usd * fxRate) : row.market_value_usd;
     const rows = [...(snapshot?.combined_holdings ?? [])]
-      .filter((row) => row.market_value_usd > 0)
-      .sort((a, b) => b.market_value_usd - a.market_value_usd);
-    const shown = rows.slice(0, 7).map((row) => ({ name: row.symbol, value: row.market_value_usd }));
-    const other = rows.slice(7).reduce((sum, row) => sum + row.market_value_usd, 0);
+      .filter((row) => valueOf(row) > 0)
+      .sort((a, b) => valueOf(b) - valueOf(a));
+    const shown = rows.slice(0, 7).map((row) => ({ name: row.symbol, value: valueOf(row) }));
+    const other = rows.slice(7).reduce((sum, row) => sum + valueOf(row), 0);
     if (other > 0) shown.push({ name: t("portfolio.allocation.other"), value: other });
     const valuation = snapshot?.valuation;
-    if ((valuation?.cash_usd ?? 0) > 0.01) shown.push({ name: t("portfolio.allocation.cash"), value: valuation?.cash_usd ?? 0 });
-    if ((valuation?.unpriced_or_other_usd ?? 0) > 0.01) shown.push({ name: t("portfolio.allocation.unpriced"), value: valuation?.unpriced_or_other_usd ?? 0 });
+    const cash = toDisplay(valuation?.cash_usd) ?? 0;
+    const unpriced = toDisplay(valuation?.unpriced_or_other_usd) ?? 0;
+    if (cash > 0.01) shown.push({ name: t("portfolio.allocation.cash"), value: cash });
+    if (unpriced > 0.01) shown.push({ name: t("portfolio.allocation.unpriced"), value: unpriced });
     if (!valuation && snapshot) {
-      const priced = rows.reduce((sum, row) => sum + row.market_value_usd, 0);
-      const residual = Math.max(0, snapshot.totals.usd - priced);
+      const priced = rows.reduce((sum, row) => sum + valueOf(row), 0);
+      const total = displayCurrency === "CNY" ? snapshot.totals.cny : snapshot.totals.usd;
+      const residual = Math.max(0, total - priced);
       if (residual > 0.01) shown.push({ name: t("portfolio.allocation.cashUnpriced"), value: residual });
     }
     return shown;
-  }, [snapshot, t]);
+  }, [snapshot, t, displayCurrency, fxRate]);
 
-  const dailyChange = useMemo(() => {
+  const totalDailyChange = useMemo(() => {
     if (!snapshot || !history.length) return null;
-    const sameDay = history.filter((row) => dayKey(row.created_at) === dayKey(snapshot.created_at));
-    if (!sameDay.length) return null;
-    return snapshot.totals.usd - Number(sameDay[0].total_usd);
-  }, [snapshot, history]);
+    const yesterday = prevDayKey(snapshot.created_at);
+    const yesterdayRows = history.filter((row) => dayKey(row.created_at) === yesterday);
+    if (!yesterdayRows.length) return null;
+    const baseline = yesterdayRows[yesterdayRows.length - 1];
+    const current = displayCurrency === "CNY" ? snapshot.totals.cny : snapshot.totals.usd;
+    return current - historyTotals(baseline, displayCurrency);
+  }, [snapshot, history, displayCurrency]);
+
+  const netDailyChange = useMemo(() => {
+    if (!snapshot || !history.length) return null;
+    const yesterday = prevDayKey(snapshot.created_at);
+    const yesterdayRows = history.filter((row) => dayKey(row.created_at) === yesterday);
+    if (!yesterdayRows.length) return null;
+    const baseline = yesterdayRows[yesterdayRows.length - 1];
+    const current = netAssetsAmount(snapshot.net_assets, snapshot.totals, displayCurrency);
+    return current - historyNetAssets(baseline, displayCurrency);
+  }, [snapshot, history, displayCurrency]);
 
   const latestCompleteAt = history.length ? history[history.length - 1].created_at : undefined;
   const coverage = snapshot?.valuation?.identified_coverage ?? (() => {
     if (!snapshot?.totals.usd) return 0;
     return (snapshot.positions ?? []).reduce((sum, row) => sum + (row.priced ? row.market_value_usd : 0), 0) / snapshot.totals.usd;
   })();
-  const displayCurrency = portfolioSettings?.display_currency ?? snapshot?.display_currency ?? "USD";
   const totalDisplay = displayCurrency === "CNY" ? snapshot?.totals.cny : snapshot?.totals.usd;
+  const netAssetsDisplay = snapshot
+    ? netAssetsAmount(snapshot.net_assets, snapshot.totals, displayCurrency)
+    : undefined;
+  const secondaryTotal = displayCurrency === "CNY" ? snapshot?.totals.usd : snapshot?.totals.cny;
+  const secondaryNetAssets = displayCurrency === "CNY" ? snapshot?.net_assets?.usd : snapshot?.net_assets?.cny;
+  const secondaryCurrency = displayCurrency === "CNY" ? "USD" : "CNY";
+  const pricedDisplay = toDisplay(snapshot?.valuation?.priced_usd);
+  const cashDisplay = toDisplay(snapshot?.valuation?.cash_usd);
 
   return (
     <div className="min-h-screen p-4 sm:p-6 lg:p-8">
@@ -351,25 +486,47 @@ export function Portfolio() {
 
         {snapshot ? (
           <>
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
               <Metric
                 label={t("portfolio.metrics.total")}
                 value={money(totalDisplay, displayCurrency)}
-                note={displayCurrency === "USD" ? money(snapshot.totals.cny, "CNY") : money(snapshot.totals.usd)}
+                note={money(secondaryTotal, secondaryCurrency)}
+                tip={t("portfolio.metrics.tips.total")}
                 warningNote={failedAccounts.length ? t("portfolio.metrics.excluded", { count: failedAccounts.length }) : undefined}
                 icon={<WalletCards className="h-4 w-4" />}
               />
               <Metric
                 label={t("portfolio.metrics.change")}
-                value={dailyChange == null ? "—" : `${dailyChange >= 0 ? "+" : ""}${money(dailyChange)}`}
+                value={totalDailyChange == null ? "—" : signedMoney(totalDailyChange, displayCurrency)}
                 note={t("portfolio.metrics.changeNote")}
-                tone={dailyChange == null ? undefined : dailyChange >= 0 ? "positive" : "danger"}
+                tip={t("portfolio.metrics.tips.change")}
+                tone={totalDailyChange == null ? undefined : totalDailyChange >= 0 ? "positive" : "danger"}
+                icon={<Clock3 className="h-4 w-4" />}
+              />
+              <Metric
+                label={t("portfolio.metrics.netAssets")}
+                value={money(netAssetsDisplay, displayCurrency)}
+                note={money(secondaryNetAssets ?? secondaryTotal, secondaryCurrency)}
+                tip={t("portfolio.metrics.tips.netAssets")}
+                warningNote={failedAccounts.length ? t("portfolio.metrics.excluded", { count: failedAccounts.length }) : undefined}
+                icon={<WalletCards className="h-4 w-4" />}
+              />
+              <Metric
+                label={t("portfolio.metrics.netChange")}
+                value={netDailyChange == null ? "—" : signedMoney(netDailyChange, displayCurrency)}
+                note={t("portfolio.metrics.netChangeNote")}
+                tip={t("portfolio.metrics.tips.netChange")}
+                tone={netDailyChange == null ? undefined : netDailyChange >= 0 ? "positive" : "danger"}
                 icon={<Clock3 className="h-4 w-4" />}
               />
               <Metric
                 label={t("portfolio.metrics.coverage")}
                 value={percentage(coverage)}
-                note={t("portfolio.metrics.coverageNote", { priced: money(snapshot.valuation?.priced_usd), cash: money(snapshot.valuation?.cash_usd) })}
+                note={t("portfolio.metrics.coverageNote", {
+                  priced: money(pricedDisplay, displayCurrency),
+                  cash: money(cashDisplay, displayCurrency),
+                })}
+                tip={t("portfolio.metrics.tips.coverage")}
                 icon={<Database className="h-4 w-4" />}
               />
               <Metric
@@ -382,8 +539,8 @@ export function Portfolio() {
             </section>
 
             <section className="grid gap-4 xl:grid-cols-2">
-              <AllocationPie title={t("portfolio.allocation.byAccount")} data={brokerAllocation} centerLabel={money(totalDisplay, displayCurrency)} onSelect={(id) => setSourceFilter(id)} />
-              <AllocationPie title={t("portfolio.allocation.byHolding")} data={holdingAllocation} centerLabel={t("portfolio.allocation.center")} />
+              <AllocationPie title={t("portfolio.allocation.byAccount")} data={brokerAllocation} centerLabel={money(totalDisplay, displayCurrency)} displayCurrency={displayCurrency} onSelect={(id) => setSourceFilter(id)} />
+              <AllocationPie title={t("portfolio.allocation.byHolding")} data={holdingAllocation} centerLabel={t("portfolio.allocation.center")} displayCurrency={displayCurrency} />
             </section>
 
             {snapshot.warnings.length ? (
@@ -415,15 +572,64 @@ export function Portfolio() {
                   <thead className="bg-muted/40 text-left text-xs text-muted-foreground"><tr><Th>{t("portfolio.holdings.colBroker")}</Th><Th>{t("portfolio.holdings.colSymbol")}</Th><Th>{t("portfolio.holdings.colType")}</Th><Th>{t("portfolio.holdings.colQuantity")}</Th><Th>{t("portfolio.holdings.colCostPrice")}</Th><Th>{t("portfolio.holdings.colValue")}</Th><Th>{t("portfolio.holdings.colWeight")}</Th><Th>{t("portfolio.holdings.colPnl")}</Th><Th>{t("portfolio.holdings.colData")}</Th></tr></thead>
                   <tbody className="divide-y">
                     {positions.map((row) => {
-                      const weight = snapshot.totals.usd > 0 ? row.market_value_usd / snapshot.totals.usd : 0;
-                      return <tr key={`${row.source_id ?? row.broker}-${row.symbol}`} className="hover:bg-muted/20"><Td><div className="font-medium">{row.source_label ?? row.broker.toUpperCase()}</div><div className="mt-1 text-xs"><BrokerBadge broker={row.broker} /></div></Td><Td><div className="font-medium">{row.symbol}</div><div className="max-w-52 truncate text-xs text-muted-foreground">{row.name}</div></Td><Td><span className="capitalize text-muted-foreground">{row.asset_type}</span></Td><Td>{quantity(row.quantity)}</Td><Td><div>{price(row.cost_price)}</div><div className="text-xs text-muted-foreground">{price(row.market_price)}</div></Td><Td><div className="font-medium">{row.priced ? money(row.market_value_usd) : "—"}</div><div className="text-xs text-muted-foreground">{row.priced ? money(row.market_value_cny, "CNY") : t("portfolio.holdings.unpriced")}</div></Td><Td>{row.priced ? percentage(weight) : "—"}</Td><Td><span className={row.unrealized_pnl_usd == null ? "text-muted-foreground" : row.unrealized_pnl_usd >= 0 ? "text-positive" : "text-danger"}>{row.unrealized_pnl_usd == null ? "—" : money(row.unrealized_pnl_usd)}</span></Td><Td><DataBadge priced={row.priced} /></Td></tr>;
+                      const nativeCcy = nativeCurrencyOf(row);
+                      const nativeValue = nativeMarketValue(row);
+                      const displayValue = displayMarketValue(row, displayCurrency);
+                      const weightBase = netAssetsDisplay ?? (displayCurrency === "CNY" ? snapshot.totals.cny : snapshot.totals.usd);
+                      const weight = weightBase > 0 && displayValue != null ? displayValue / weightBase : 0;
+                      const pnlDisplay = toDisplay(row.unrealized_pnl_usd);
+                      const pnlLocal = nativePnl(row);
+                      const displayName =
+                        row.name && row.name.trim() && row.name.trim().toUpperCase() !== row.symbol.toUpperCase()
+                          ? row.name.trim()
+                          : null;
+                      return (
+                        <tr key={`${row.source_id ?? row.broker}-${row.symbol}`} className="hover:bg-muted/20">
+                          <Td>
+                            <div className="font-medium">{row.source_label ?? row.broker.toUpperCase()}</div>
+                            <div className="mt-1 text-xs"><BrokerBadge broker={row.broker} /></div>
+                          </Td>
+                          <Td>
+                            <div className="font-medium">{displayName ?? row.symbol}</div>
+                            {displayName ? (
+                              <div className="max-w-52 truncate text-xs text-muted-foreground">{row.symbol}</div>
+                            ) : null}
+                          </Td>
+                          <Td><span className="capitalize text-muted-foreground">{row.asset_type}</span></Td>
+                          <Td>{quantity(row.quantity)}</Td>
+                          <Td>
+                            <div>{price(row.cost_price, nativeCcy)}</div>
+                            <div className="text-xs text-muted-foreground">{price(row.market_price, nativeCcy)}</div>
+                          </Td>
+                          <Td>
+                            <div className="font-medium">{row.priced ? money(displayValue, displayCurrency) : "—"}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {!row.priced
+                                ? t("portfolio.holdings.unpriced")
+                                : nativeValue != null
+                                  ? money(nativeValue, nativeCcy)
+                                  : "—"}
+                            </div>
+                          </Td>
+                          <Td>{row.priced ? percentage(weight) : "—"}</Td>
+                          <Td>
+                            <div className={pnlDisplay == null ? "text-muted-foreground" : marketChangeTextClass(pnlDisplay)}>
+                              {pnlDisplay == null ? "—" : money(pnlDisplay, displayCurrency)}
+                            </div>
+                            {pnlLocal != null ? (
+                              <div className="text-xs text-muted-foreground">{money(pnlLocal, nativeCcy)}</div>
+                            ) : null}
+                          </Td>
+                          <Td><DataBadge priced={row.priced} /></Td>
+                        </tr>
+                      );
                     })}
                   </tbody>
                 </table>
               </div>
             </section>
 
-            <HistoryChart history={history} />
+            <HistoryChart history={history} displayCurrency={displayCurrency} />
 
             <section className="rounded-xl border bg-card p-5">
               <div className="mb-4 flex items-center gap-2"><KeyRound className="h-4 w-4 text-muted-foreground" /><h2 className="font-semibold">{t("portfolio.credentials.title")}</h2></div>
@@ -437,11 +643,38 @@ export function Portfolio() {
   );
 }
 
+/** Hover/focus tooltip for metric statistical logic. */
+function MetricTip({ text }: { text: string }) {
+  return (
+    <span className="group/tip relative inline-flex shrink-0">
+      <button
+        type="button"
+        className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:text-muted-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+        aria-label={text}
+      >
+        <CircleHelp className="h-3.5 w-3.5" aria-hidden />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 hidden w-[min(18rem,calc(100vw-2rem))] -translate-x-1/2 rounded-md border bg-popover px-3 py-2 text-left text-[11px] font-normal normal-case leading-relaxed tracking-normal text-popover-foreground shadow-md group-hover/tip:block group-focus-within/tip:block"
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
 /** Headline figure tile; `warningNote` is the amber caveat under the value. */
-function Metric({ label, value, note, warningNote, icon, tone }: { label: string; value: string; note?: string; warningNote?: string; icon: ReactNode; tone?: "positive" | "danger" | "warning" }) {
+function Metric({ label, value, note, tip, warningNote, icon, tone }: { label: string; value: string; note?: string; tip?: string; warningNote?: string; icon: ReactNode; tone?: "positive" | "danger" | "warning" }) {
   const toneClass = tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : tone === "warning" ? "text-warning" : "";
   return <div className="rounded-xl border bg-card p-5">
-    <div className="flex items-center justify-between text-xs text-muted-foreground"><span>{label}</span>{icon}</div>
+    <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+      <span className="inline-flex min-w-0 items-center gap-1">
+        <span className="truncate">{label}</span>
+        {tip ? <MetricTip text={tip} /> : null}
+      </span>
+      <span className="shrink-0">{icon}</span>
+    </div>
     <div className={`mt-3 text-2xl font-semibold tracking-tight ${toneClass}`}>{value}</div>
     {note ? <div className="mt-1 truncate text-xs text-muted-foreground" title={note}>{note}</div> : null}
     {warningNote ? <div className="mt-1 flex items-start gap-1.5 text-xs text-warning"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" /><span>{warningNote}</span></div> : null}
@@ -502,6 +735,14 @@ function RefreshProgress({ state, settings }: { state: PortfolioRefreshState; se
 function AccountCard({ account, active, displayCurrency, onClick, onReconnect, reconnecting, reconnectDisabled }: { account: PortfolioAccount; active: boolean; displayCurrency: "USD" | "CNY"; onClick: () => void; onReconnect?: () => void; reconnecting: boolean; reconnectDisabled: boolean }) {
   const { t } = useTranslation();
   const failed = account.status === "error";
+  const grossPrimary = displayCurrency === "CNY" ? account.total_cny : account.total_usd;
+  const grossSecondary = displayCurrency === "CNY" ? account.total_usd : account.total_cny;
+  const netAmount = displayCurrency === "CNY"
+    ? (account.net_assets_cny ?? account.total_cny)
+    : (account.net_assets_usd ?? account.total_usd);
+  const financingGap = account.net_assets_usd != null
+    && account.total_usd != null
+    && Math.abs(account.net_assets_usd - account.total_usd) > 0.01;
   return <div role="button" tabIndex={0} onClick={onClick} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onClick(); }} className={`cursor-pointer rounded-xl border bg-card p-5 transition ${active ? "border-primary ring-1 ring-primary/20" : "hover:border-primary/40"}`}>
     <div className="flex items-center justify-between">
       <div><div className="font-medium">{account.label ?? account.broker.toUpperCase()}</div><div className="mt-1 text-xs"><BrokerBadge broker={account.broker} /></div></div>
@@ -514,8 +755,14 @@ function AccountCard({ account, active, displayCurrency, onClick, onReconnect, r
       </>
     ) : (
       <>
-        <div className="mt-4 text-2xl font-semibold">{displayCurrency === "CNY" ? money(account.total_cny, "CNY") : money(account.total_usd)}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{displayCurrency === "CNY" ? money(account.total_usd) : money(account.total_cny, "CNY")} · {t("portfolio.accounts.positions", { count: account.position_count ?? 0 })}</div>
+        <div className="mt-4 text-2xl font-semibold">{money(grossPrimary, displayCurrency)}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {financingGap
+            ? t("portfolio.accounts.netAssets", { value: money(netAmount, displayCurrency) })
+            : money(grossSecondary, displayCurrency === "CNY" ? "USD" : "CNY")}
+          {" · "}
+          {t("portfolio.accounts.positions", { count: account.position_count ?? 0 })}
+        </div>
         <div className="mt-4 flex items-center justify-between border-t pt-3 text-xs"><span className="text-positive">{t("portfolio.accounts.fresh")}</span><span className="text-muted-foreground">{dateTime(account.last_success_at)}</span></div>
       </>
     )}
@@ -555,7 +802,7 @@ function CredentialCard({ account }: { account: PortfolioAccount }) {
 
 type AllocationDatum = { id?: string; name: string; value: number; connector?: string };
 
-function AllocationPie({ title, data, centerLabel, onSelect }: { title: string; data: AllocationDatum[]; centerLabel: string; onSelect?: (id: string) => void }) {
+function AllocationPie({ title, data, centerLabel, displayCurrency = "USD", onSelect }: { title: string; data: AllocationDatum[]; centerLabel: string; displayCurrency?: "USD" | "CNY"; onSelect?: (id: string) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const { i18n: instance } = useTranslation();
   const dark = useThemeDark();
@@ -573,7 +820,7 @@ function AllocationPie({ title, data, centerLabel, onSelect }: { title: string; 
         backgroundColor: theme.tooltipBg,
         borderColor: theme.tooltipBorder,
         textStyle: { color: theme.tooltipText },
-        formatter: (params: { name: string; value: number; percent: number }) => `${params.name}<br/>${money(params.value)} · ${slicePercentage(params.percent)}`,
+        formatter: (params: { name: string; value: number; percent: number }) => `${params.name}<br/>${money(params.value, displayCurrency)} · ${slicePercentage(params.percent)}`,
       },
       legend: { type: "scroll", bottom: 0, left: "center", textStyle: { color: theme.textColor }, pageTextStyle: { color: theme.textColor } },
       series: [{ type: "pie", radius: ["46%", "70%"], center: ["50%", "43%"], avoidLabelOverlap: true, padAngle: 2, itemStyle: { borderRadius: 5 }, label: { show: true, color: theme.textColor, formatter: (params: { name: string; percent: number }) => params.percent >= 2 ? `${params.name}\n${slicePercentage(params.percent)}` : "", fontSize: 12 }, labelLine: { length: 10, length2: 7, lineStyle: { color: theme.gridColor } }, labelLayout: { hideOverlap: true }, data }],
@@ -584,11 +831,11 @@ function AllocationPie({ title, data, centerLabel, onSelect }: { title: string; 
     chart.on("click", select);
     window.addEventListener("resize", resize);
     return () => { window.removeEventListener("resize", resize); chart.off("click", select); chart.dispose(); };
-  }, [data, centerLabel, onSelect, dark, instance.language]);
+  }, [data, centerLabel, displayCurrency, onSelect, dark, instance.language]);
   return <div className="rounded-xl border bg-card p-5"><h2 className="font-semibold">{title}</h2><div ref={ref} className="h-80 w-full" /></div>;
 }
 
-function HistoryChart({ history }: { history: PortfolioHistoryPoint[] }) {
+function HistoryChart({ history, displayCurrency = "USD" }: { history: PortfolioHistoryPoint[]; displayCurrency?: "USD" | "CNY" }) {
   const ref = useRef<HTMLDivElement>(null);
   const { t, i18n: instance } = useTranslation();
   const dark = useThemeDark();
@@ -605,16 +852,16 @@ function HistoryChart({ history }: { history: PortfolioHistoryPoint[] }) {
         backgroundColor: theme.tooltipBg,
         borderColor: theme.tooltipBorder,
         textStyle: { color: theme.tooltipText },
-        formatter: (items: Array<{ dataIndex: number; value: number }>) => { const item = items[0]; const row = rows[item.dataIndex]; return `${dateTime(row?.created_at)}<br/>${money(Number(item?.value))}`; },
+        formatter: (items: Array<{ dataIndex: number; value: number }>) => { const item = items[0]; const row = rows[item.dataIndex]; return `${dateTime(row?.created_at)}<br/>${money(Number(item?.value), displayCurrency)}`; },
       },
       xAxis: { type: "category", boundaryGap: false, data: rows.map((row) => new Date(row.created_at).toLocaleString(uiLocale(), { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })), axisLabel: { color: theme.textColor, hideOverlap: true }, axisLine: { lineStyle: { color: theme.gridColor } } },
-      yAxis: { type: "value", scale: true, axisLabel: { color: theme.textColor, formatter: compactUsd }, splitLine: { lineStyle: { color: theme.gridColor, opacity: 0.45 } } },
-      series: [{ type: "line", data: rows.map((row) => Number(row.total_usd)), smooth: true, symbol: rows.length < 30 ? "circle" : "none", lineStyle: { width: 2, color: "#4f6edb" }, itemStyle: { color: "#4f6edb" }, areaStyle: { color: "rgba(79,110,219,0.10)" } }],
+      yAxis: { type: "value", scale: true, axisLabel: { color: theme.textColor, formatter: (value: number) => compactMoney(value, displayCurrency) }, splitLine: { lineStyle: { color: theme.gridColor, opacity: 0.45 } } },
+      series: [{ type: "line", data: rows.map((row) => historyNetAssets(row, displayCurrency)), smooth: true, symbol: rows.length < 30 ? "circle" : "none", lineStyle: { width: 2, color: "#4f6edb" }, itemStyle: { color: "#4f6edb" }, areaStyle: { color: "rgba(79,110,219,0.10)" } }],
     });
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);
     return () => { window.removeEventListener("resize", resize); chart.dispose(); };
-  }, [history, dark, instance.language]);
+  }, [history, displayCurrency, dark, instance.language]);
   return <section className="rounded-xl border bg-card p-5">
     <div className="flex items-start justify-between gap-3">
       <div><h2 className="font-semibold">{t("portfolio.history.title")}</h2><p className="mt-1 text-xs text-muted-foreground">{t("portfolio.history.hint")}</p></div>

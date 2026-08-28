@@ -1,7 +1,7 @@
 """Tests for the stock-news tool.
 
-No request leaves the process: the Eastmoney HTTP boundary
-(:func:`backtest.loaders.eastmoney_client.throttled_get_json`) and the Yahoo
+No request leaves the process: the Eastmoney news boundary
+(:func:`backtest.loaders.eastmoney_client.get_news_search`) and the Yahoo
 :func:`backtest.loaders.yahoo_client.search_news` helper are mocked so the real
 client + tool parsing run fully offline.
 """
@@ -35,6 +35,13 @@ def _em_news_payload() -> dict[str, Any]:
                     "mediaName": "东方财富",
                     "date": "2024-04-30 08:00:00",
                     "content": "公司披露一季报，营收同比增长 " * 30,
+                },
+                {
+                    "title": "兆易创新(<em>603986</em>.SH)业绩超预期",
+                    "url": "https://finance.eastmoney.com/a/3.html",
+                    "mediaName": "证券时报",
+                    "date": "2024-04-28 12:00:00",
+                    "content": "2<em>0</em>2<em>6</em>年中报净利润增长",
                 },
                 {
                     "title": "白酒板块全线走强",
@@ -93,6 +100,10 @@ class TestHelpers:
         assert len(out) <= 281
         assert out.endswith("…")
 
+    def test_snippet_strips_html_tags(self) -> None:
+        assert _snippet("兆易创新(<em>603986</em>.SH)业绩") == "兆易创新(603986.SH)业绩"
+        assert _snippet("2<em>0</em>2<em>6</em>年中报") == "2026年中报"
+
     def test_search_news_filters_to_dict_items(self, monkeypatch) -> None:
         def fake_get_json(url: str, **kwargs: Any) -> dict[str, Any]:
             assert url == yahoo_client._SEARCH_BASE
@@ -124,28 +135,32 @@ class TestExecuteSuccess:
     def test_a_share_stock_news(self) -> None:
         tool = StockNewsTool()
         with patch.object(
-            eastmoney_client, "throttled_get_json", return_value=_em_news_payload()
-        ) as http:
+            eastmoney_client, "get_news_search", return_value=_em_news_payload()
+        ) as news_search:
             out = json.loads(tool.execute(code="600519.SH", scope="stock", limit=10))
 
-        http.assert_called_once()
-        _, kwargs = http.call_args
-        assert kwargs["host_key"] == "eastmoney"
+        news_search.assert_called_once()
+        param_obj = news_search.call_args[0][0]
+        assert param_obj["keyword"] == "600519"
+        assert param_obj["param"]["cmsArticleWebOld"]["pageSize"] == 10
 
         assert out["ok"] is True
         assert out["market"] == "a_share"
         assert out["source"] == "eastmoney"
         assert out["data"]["code"] == "600519.SH"
-        assert len(out["data"]["articles"]) == 2
+        assert len(out["data"]["articles"]) == 3
         first = out["data"]["articles"][0]
         assert first["title"] == "贵州茅台一季度净利大增"
         assert first["source"] == "东方财富"
         assert first["snippet"].endswith("…")
+        em_article = out["data"]["articles"][1]
+        assert em_article["title"] == "兆易创新(603986.SH)业绩超预期"
+        assert em_article["snippet"] == "2026年中报净利润增长"
 
     def test_global_scope_needs_no_code(self) -> None:
         tool = StockNewsTool()
         with patch.object(
-            eastmoney_client, "throttled_get_json", return_value=_em_news_payload()
+            eastmoney_client, "get_news_search", return_value=_em_news_payload()
         ):
             out = json.loads(tool.execute(scope="global"))
 
@@ -153,7 +168,7 @@ class TestExecuteSuccess:
         assert out["market"] == "global"
         assert out["source"] == "eastmoney"
         assert out["data"]["scope"] == "global"
-        assert len(out["data"]["articles"]) == 2
+        assert len(out["data"]["articles"]) == 3
 
     def test_us_stock_via_yahoo_returns_articles(self) -> None:
         tool = StockNewsTool()
@@ -225,7 +240,7 @@ class TestExecuteError:
         tool = StockNewsTool()
         with patch.object(
             eastmoney_client,
-            "throttled_get_json",
+            "get_news_search",
             side_effect=RuntimeError("eastmoney banned"),
         ):
             out = json.loads(tool.execute(code="600519.SH"))

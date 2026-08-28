@@ -41,7 +41,12 @@ _RANKING_FIELDS = "f12,f14,f3,f2,f104,f105,f128,f140"
 
 # Industry-only selector (f13 = market marker distinguishing the stock row
 # from its board row in the spt=1 single-industry response).
-_INDUSTRY_FIELDS = "f12,f13,f14"
+_INDUSTRY_FIELDS = "f12,f13,f14,f3"
+
+# Board constituent list (clist) field selectors.
+_PEER_FIELDS = "f12,f13,f14,f2,f3,f6"
+_DEFAULT_PEER_LIMIT = 8
+_MAX_PEER_LIMIT = 20
 
 # Industry-board universe selector for the ranking view (m:90 = board market,
 # t:2 = industry board sub-type). Sort by f3 (change percent), descending.
@@ -252,6 +257,159 @@ def resolve_industry_board(code: str) -> str | None:
             if board_name and board_name != "-":
                 return str(board_name)
     return None
+
+
+def _symbol_from_clist_row(row: dict[str, Any]) -> str | None:
+    """Map one Eastmoney clist row to a Vibe-Trading A-share symbol."""
+    code = row.get("f12")
+    if not code:
+        return None
+    code_str = str(code).strip()
+    market = row.get("f13")
+    if market in (0, "0"):
+        suffix = "SZ"
+    elif market in (1, "1"):
+        suffix = "SH"
+    elif code_str.startswith(("4", "8")):
+        suffix = "BJ"
+    elif code_str.startswith(("6", "9")):
+        suffix = "SH"
+    else:
+        suffix = "SZ"
+    return f"{code_str}.{suffix}"
+
+
+def _parse_peer_row(row: Any) -> dict[str, Any] | None:
+    """Shape one board-constituent clist row into a peer quote record."""
+    if not isinstance(row, dict):
+        return None
+    symbol = _symbol_from_clist_row(row)
+    name = row.get("f14")
+    if not symbol or not name:
+        return None
+    return {
+        "symbol": symbol,
+        "name": str(name),
+        "price": _as_float(row.get("f2")),
+        "change_pct": _as_float(row.get("f3")),
+        "amount": _as_float(row.get("f6")),
+    }
+
+
+def resolve_industry_board_meta(code: str) -> dict[str, Any] | None:
+    """Resolve the primary industry board code/name for an A-share symbol.
+
+    Returns:
+        ``{board_code, board_name, board_change_pct}`` or ``None``.
+    """
+    if _detect_market(code) != "a_share":
+        return None
+    secid = resolve_secid(code)
+    if secid is None:
+        return None
+    try:
+        payload = get_json(
+            _MEMBERSHIP_URL,
+            params={
+                "secid": secid,
+                "spt": "1",
+                "pi": "0",
+                "pz": "100",
+                "fields": _INDUSTRY_FIELDS,
+                "fltt": "2",
+                "po": "1",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to None
+        logger.warning("industry board meta fetch failed for %s: %s", code, exc)
+        return None
+
+    for row in _diff_rows(payload):
+        if not isinstance(row, dict):
+            continue
+        if row.get("f13") in (90, "90"):
+            board_code = row.get("f12")
+            board_name = row.get("f14")
+            if board_code and board_name and board_name != "-":
+                return {
+                    "board_code": str(board_code),
+                    "board_name": str(board_name),
+                    "board_change_pct": _as_float(row.get("f3")),
+                }
+    return None
+
+
+def fetch_industry_peers(code: str, *, limit: int = _DEFAULT_PEER_LIMIT) -> dict[str, Any] | None:
+    """Fetch same-industry peers for an A-share via Eastmoney board constituents.
+
+    Args:
+        code: Vibe-Trading symbol (e.g. ``603986.SH``).
+        limit: Maximum peer rows (excluding the target symbol).
+
+    Returns:
+        A dict with industry metadata, optional target quote, and peer rows sorted
+        by turnover amount descending; ``None`` when the industry board cannot be
+        resolved or the constituent list is empty.
+    """
+    code = code.strip().upper()
+    if _detect_market(code) != "a_share":
+        return None
+    limit = max(1, min(int(limit), _MAX_PEER_LIMIT))
+    meta = resolve_industry_board_meta(code)
+    if meta is None:
+        return None
+
+    board_code = meta["board_code"]
+    try:
+        payload = get_json(
+            _RANKING_URL,
+            params={
+                "fs": f"b:{board_code}",
+                "fields": _PEER_FIELDS,
+                "pn": "1",
+                "pz": str(limit + 12),
+                "po": "1",
+                "fid": "f6",
+                "fltt": "2",
+                "invt": "2",
+                "np": "1",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to None
+        logger.warning("industry peers fetch failed for %s: %s", code, exc)
+        return None
+
+    target_bare = _bare_code_from_symbol(code)
+    peers: list[dict[str, Any]] = []
+    target: dict[str, Any] | None = None
+    for row in _diff_rows(payload):
+        parsed = _parse_peer_row(row)
+        if parsed is None:
+            continue
+        bare = _bare_code_from_symbol(parsed["symbol"])
+        if bare == target_bare:
+            target = parsed
+            continue
+        peers.append(parsed)
+        if len(peers) >= limit:
+            break
+
+    if not peers and target is None:
+        return None
+
+    return {
+        "code": code,
+        "industry": meta["board_name"],
+        "board_code": board_code,
+        "board_change_pct": meta.get("board_change_pct"),
+        "target": target,
+        "peers": peers,
+    }
+
+
+def _bare_code_from_symbol(symbol: str) -> str:
+    """Return the bare numeric code from a dotted symbol."""
+    return symbol.strip().upper().split(".", 1)[0]
 
 
 def _fetch_ranking(limit: int) -> str:

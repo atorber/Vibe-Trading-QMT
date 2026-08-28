@@ -387,7 +387,9 @@ function connectorState(auth: LiveBrokerStatus["auth"], t: TFunction): {
   if (auth.connection_state === "ready") {
     return { kind: "ready", label: t("runtime.readyToVerify"), tone: "warning", action: "runtime.verifyConnection" };
   }
-  return { kind: "unknown", label: t("runtime.connectorStatusUnavailable"), tone: "neutral" };
+  // Never-checked SDK connectors (connection_state null) still need a verify
+  // affordance — otherwise Futu/OpenD sits on "status unavailable" forever.
+  return { kind: "unknown", label: t("runtime.connectorStatusUnavailable"), tone: "neutral", action: "runtime.verifyConnection" };
 }
 
 function connectorDiagnostic(errorCode: string | null | undefined, t: TFunction): string {
@@ -431,6 +433,11 @@ const SDK_CONNECTOR_SETUP_HINTS = {
       "QMT_BRIDGE_API_KEY",
       "QMT_BRIDGE_ACCOUNT_ID",
     ],
+  },
+  futu: {
+    introKey: "runtime.missingFutuVariables",
+    variables: ["FUTU_HOST", "FUTU_PORT"],
+    fileHintKey: "runtime.missingFutuFileHint",
   },
 } as const;
 

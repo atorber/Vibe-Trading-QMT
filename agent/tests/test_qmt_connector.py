@@ -236,6 +236,43 @@ def test_qmt_account_snapshot_exposes_shared_account_fields(monkeypatch) -> None
     assert result["account"]["currency"] == "CNY"
 
 
+def test_qmt_account_snapshot_merges_credit_detail(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_request(config, method, path, *, params=None, require_api_key, timeout=None):
+        calls.append(path)
+        if path == "/api/trading/asset":
+            return {
+                "data": {
+                    "cash": 1000.0,
+                    "market_value": 200.0,
+                    "total_asset": 1200.0,
+                }
+            }
+        if path == "/api/credit/asset":
+            return {
+                "data": [
+                    {
+                        "m_dBalance": 1_500_000.0,
+                        "m_dAssureAsset": 1_200_000.0,
+                        "m_dTotalDebt": 300_000.0,
+                    }
+                ]
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(qmt, "_request", fake_request)
+    result = qmt.get_account_snapshot(
+        qmt.QmtConfig(api_key="key", account_id="755860001037")
+    )
+    assert calls == ["/api/trading/asset", "/api/credit/asset"]
+    assert result["account"]["total_asset"] == 1_500_000.0
+    assert result["account"]["gross_assets"] == 1_500_000.0
+    assert result["account"]["net_assets"] == 1_200_000.0
+    assert result["account"]["total_debt"] == 300_000.0
+    assert result["balances"][0]["net_assets"] == 1_200_000.0
+
+
 def test_qmt_build_config_maps_account_alias() -> None:
     cfg = qmt.QmtConfig(host="10.0.0.1", api_key="k").with_overrides(account="ACC-9")
     assert cfg.account_id == "ACC-9"

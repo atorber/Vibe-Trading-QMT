@@ -261,6 +261,9 @@ register_portfolio_routes(app)
 from src.api.connection_routes import register_connection_routes  # noqa: E402
 register_connection_routes(app)
 
+from src.api.markets_routes import register_markets_routes  # noqa: E402
+register_markets_routes(app)
+
 from src.api.live_routes import (  # noqa: F401, E402
     CommitMandateRequest,
     LiveHaltRequest,

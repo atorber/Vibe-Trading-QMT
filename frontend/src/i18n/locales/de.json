@@ -13,6 +13,7 @@
     "runtime": "Runtime",
     "scheduled": "Geplant",
     "reports": "Berichte",
+    "markets": "Märkte",
     "alphaZoo": "Alpha Zoo",
     "settings": "Einstellungen",
     "correlation": "Korrelationsmatrix",
@@ -1459,6 +1460,16 @@
     "error": "Faktor-Ergebnisse konnten nicht geladen werden",
     "noFactorData": "Für diesen Lauf sind keine Faktor-Analyseergebnisse verfügbar."
   },
+  "markets": {
+    "tabs": {
+      "overview": "Übersicht",
+      "narratives": "Narrative",
+      "anomalies": "Anomalien",
+      "news": "News",
+      "earnings": "Earnings",
+      "peers": "Peers"
+    }
+  },
   "portfolio": {
     "page": {
       "badge": "Lokal & schreibgeschützt · Mehrere Konten",
@@ -1483,7 +1494,7 @@
     "metrics": {
       "total": "Gesamtvermögen",
       "change": "Heutige Vermögensänderung",
-      "changeNote": "Enthält Marktbewegungen sowie Ein- und Auszahlungen",
+      "changeNote": "Ggü. letztem Snapshot von gestern; inkl. Markt und Cashflows",
       "coverage": "Bewertungsabdeckung",
       "coverageNote": "Bewertet {{priced}} · Bargeld {{cash}}",
       "lastComplete": "Letzte vollständige Aktualisierung",

@@ -421,6 +421,25 @@ export function Agent() {
     composerRef.current?.fill(prompt);
   }, []);
 
+  // Prefill from /?q=... (e.g. Markets → Ask Agent). Consume once then drop the param.
+  useEffect(() => {
+    const q = searchParams.get("q");
+    if (!q?.trim()) return;
+    const timer = window.setTimeout(() => {
+      fillComposer(q.trim());
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("q");
+          return next;
+        },
+        { replace: true },
+      );
+      composerRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [fillComposer, searchParams, setSearchParams]);
+
   useEffect(() => {
     const previous = previousStatusRef.current;
     previousStatusRef.current = status;

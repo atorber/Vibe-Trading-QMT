@@ -318,7 +318,20 @@ def get_account_snapshot(config: QmtConfig | None = None) -> dict[str, Any]:
         # Single asset dict without a list wrapper.
         if any(k in payload for k in ("cash", "total_asset", "market_value", "available_cash")):
             rows = [dict(payload)]
-    return _account_snapshot(cfg, rows)
+    snapshot = _account_snapshot(cfg, rows)
+    try:
+        credit_payload = _get(
+            cfg,
+            "/api/credit/asset",
+            params=_account_params(cfg),
+            require_api_key=True,
+        )
+        credit_rows = _extract_items(credit_payload, preferred_keys=("data",))
+        if credit_rows and isinstance(credit_rows[0], Mapping):
+            _apply_qmt_credit_detail(snapshot, credit_rows[0])
+    except Exception:
+        pass
+    return snapshot
 
 
 def get_positions(config: QmtConfig | None = None) -> dict[str, Any]:
@@ -334,6 +347,30 @@ def get_positions(config: QmtConfig | None = None) -> dict[str, Any]:
         "paper_guard": PAPER_GUARD,
         "account_id": cfg.account_id,
         "positions": [_position_to_dict(row, account_id=cfg.account_id) for row in rows],
+    }
+
+
+def get_batch_stock_names(
+    stocks: list[str], config: QmtConfig | None = None
+) -> dict[str, str]:
+    """Resolve Chinese instrument names via ``GET /api/utility/batch_stock_name``."""
+    cfg = config or load_config()
+    codes = [str(code).strip().upper() for code in stocks if str(code).strip()]
+    if not codes:
+        return {}
+    payload = _get(
+        cfg,
+        "/api/utility/batch_stock_name",
+        params={"stocks": ",".join(codes)},
+        require_api_key=False,
+    )
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(code).strip().upper(): str(name).strip()
+        for code, name in data.items()
+        if str(code).strip() and str(name).strip()
     }
 
 
@@ -490,6 +527,39 @@ def get_historical_bars(
     }
 
 
+def download_history_bars(
+    symbols: list[str],
+    *,
+    config: QmtConfig | None = None,
+    period: str = "1d",
+    start_time: str = "",
+    end_time: str = "",
+    timeout: float = 90.0,
+) -> dict[str, Any]:
+    """Trigger Bridge ``POST /api/download/history_data2`` for local K-line cache."""
+    cfg = config or load_config()
+    codes = [str(code).strip().upper() for code in symbols if str(code).strip()]
+    if not codes:
+        return {"status": "ok", "stocks": [], "period": period, "result": {}}
+    bridge_period = _PERIOD_MAP.get(period.strip(), period.strip() or "1d")
+    payload = _request(
+        cfg,
+        "POST",
+        "/api/download/history_data2",
+        require_api_key=False,
+        timeout=timeout,
+        json_body={
+            "stocks": codes,
+            "period": bridge_period,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+    )
+    if isinstance(payload, dict):
+        return payload
+    return {"status": "ok", "stocks": codes, "period": bridge_period, "result": payload}
+
+
 def place_order(
     config: QmtConfig | None = None,
     *,
@@ -596,6 +666,7 @@ def _request(
     params: Mapping[str, Any] | None = None,
     require_api_key: bool,
     timeout: float | None = None,
+    json_body: Mapping[str, Any] | None = None,
 ) -> Any:
     """Run an HTTP request and normalize Bridge failure modes."""
     if require_api_key and not config.api_key:
@@ -610,6 +681,8 @@ def _request(
             url = f"{url}?{query}"
 
     headers = {"Accept": "application/json"}
+    if json_body is not None:
+        headers["Content-Type"] = "application/json"
     if config.api_key:
         headers["X-API-Key"] = config.api_key
 
@@ -618,6 +691,7 @@ def _request(
             method.upper(),
             url,
             headers=headers,
+            json=dict(json_body) if json_body is not None else None,
             timeout=timeout if timeout is not None else config.timeout,
         )
     except requests.RequestException as exc:
@@ -756,6 +830,66 @@ def _account_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _apply_qmt_credit_detail(
+    snapshot: dict[str, Any], detail: Mapping[str, Any]
+) -> None:
+    """Merge QMT credit-account fields: gross (m_dBalance) vs net (m_dAssureAsset)."""
+    gross = _num(
+        _first(
+            detail,
+            ("m_dBalance", "m_d_balance", "balance", "total_asset", "gross_assets"),
+        )
+    )
+    net = _num(
+        _first(
+            detail,
+            (
+                "m_dAssureAsset",
+                "m_d_assure_asset",
+                "assure_asset",
+                "net_assets",
+                "equity",
+            ),
+        )
+    )
+    debt = _num(
+        _first(
+            detail,
+            ("m_dTotalDebt", "m_d_total_debt", "m_dTotalDebit", "total_debt"),
+        )
+    )
+    if gross is None and net is None:
+        return
+    account = snapshot.setdefault("account", {})
+    if gross is not None:
+        account["gross_assets"] = gross
+        account["total_asset"] = gross
+    if net is not None:
+        account["net_assets"] = net
+        account["equity"] = net
+    if debt is not None:
+        account["total_debt"] = debt
+    for item in snapshot.get("assets") or []:
+        if not isinstance(item, dict):
+            continue
+        if gross is not None:
+            item["gross_assets"] = gross
+            item["total_asset"] = gross
+        if net is not None:
+            item["net_assets"] = net
+        if debt is not None:
+            item["total_debt"] = debt
+    for bal in snapshot.get("balances") or []:
+        if not isinstance(bal, dict):
+            continue
+        if gross is not None:
+            bal["gross_assets"] = gross
+        if net is not None:
+            bal["net_assets"] = net
+        if debt is not None:
+            bal["total_debt"] = debt
+
+
 def _account_snapshot(cfg: QmtConfig, rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Normalize Bridge assets into the shared account shapes CLI/agent already read.
 
@@ -780,6 +914,8 @@ def _account_snapshot(cfg: QmtConfig, rows: list[Mapping[str, Any]]) -> dict[str
             "buying_power": first.get("available"),
             "market_value": first.get("market_value"),
             "total_asset": first.get("total_asset"),
+            "gross_assets": first.get("total_asset"),
+            "net_assets": first.get("total_asset"),
             "frozen": first.get("frozen"),
         }
         if first
@@ -811,9 +947,12 @@ def _position_to_dict(row: Mapping[str, Any], *, account_id: str = "") -> dict[s
     symbol = str(_first(row, ("stock_code", "symbol", "ticker", "code"), "") or "").upper()
     qty = _num(_first(row, ("volume", "qty", "quantity", "position")))
     avg_cost = _num(_first(row, ("avg_price", "open_price", "cost_price", "avg_cost")))
+    name = _first(row, ("stock_name", "InstrumentName", "instrument_name", "name"))
     return {
         "account": account_id or None,
         "symbol": symbol,
+        "name": str(name).strip() if name else None,
+        "symbol_name": str(name).strip() if name else None,
         "qty": qty,
         "quantity": qty,
         "available_qty": _num(
@@ -983,10 +1122,73 @@ def _bars_from_payload(payload: Any, *, symbol: str = "") -> list[dict[str, Any]
 
 def _bar_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "time": _first(row, ("time", "date", "datetime", "index")),
+        "time": _format_bar_time(_first(row, ("time", "date", "datetime", "index"))),
         "open": _num(_first(row, ("open", "Open"))),
         "high": _num(_first(row, ("high", "High"))),
         "low": _num(_first(row, ("low", "Low"))),
         "close": _num(_first(row, ("close", "Close"))),
         "volume": _num(_first(row, ("volume", "vol", "Volume"))),
     }
+
+
+def _format_bar_time(value: Any) -> str:
+    """Normalize QMT / Bridge bar timestamps to a readable date or datetime string.
+
+    Accepts epoch ms/sec, ``YYYYMMDD``, ``YYYYMMDDHHmmss``, ISO strings, and
+    numeric day codes. Daily values become ``YYYY-MM-DD``; intraday keep
+    ``YYYY-MM-DD HH:MM``.
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, datetime):
+        if value.hour or value.minute or value.second:
+            return value.strftime("%Y-%m-%d %H:%M")
+        return value.strftime("%Y-%m-%d")
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = int(value)
+        # Epoch milliseconds
+        if number >= 10**12:
+            dt = datetime.fromtimestamp(number / 1000.0)
+            if dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                return dt.strftime("%Y-%m-%d")
+            # A-share daily bars often stamp session close (15:00).
+            if dt.hour == 15 and dt.minute == 0:
+                return dt.strftime("%Y-%m-%d")
+            return dt.strftime("%Y-%m-%d %H:%M")
+        # Epoch seconds
+        if number >= 10**9:
+            dt = datetime.fromtimestamp(number)
+            if dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                return dt.strftime("%Y-%m-%d")
+            if dt.hour == 15 and dt.minute == 0:
+                return dt.strftime("%Y-%m-%d")
+            return dt.strftime("%Y-%m-%d %H:%M")
+        # Compact YYYYMMDD / YYYYMMDDHHmmss as int
+        digits = str(number)
+        if len(digits) == 8:
+            return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+        if len(digits) == 14:
+            return (
+                f"{digits[:4]}-{digits[4:6]}-{digits[6:8]} "
+                f"{digits[8:10]}:{digits[10:12]}"
+            )
+        return digits
+
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.isdigit():
+        return _format_bar_time(int(text))
+    # ISO / "YYYY-MM-DD HH:MM:SS"
+    normalized = text.replace("T", " ").replace("/", "-")
+    if len(normalized) >= 19 and normalized[4] == "-" and normalized[10] == " ":
+        # Keep minutes for intraday; drop seconds.
+        return normalized[:16]
+    if len(normalized) >= 10 and normalized[4] == "-" and normalized[7] == "-":
+        return normalized[:10]
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    if len(text) == 14 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]} {text[8:10]}:{text[10:12]}"
+    return text

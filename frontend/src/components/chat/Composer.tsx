@@ -287,15 +287,28 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
         </div>
       )}
       {panels}
-      {attachment && (
-        <div className="flex items-center gap-1">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 text-primary text-xs font-medium">
-            <Paperclip className="h-3 w-3" />
-            {attachment.filename}
-            <button type="button" onClick={() => setAttachment(null)} className="hover:text-destructive transition-colors">
-              <X className="h-3 w-3" />
-            </button>
-          </span>
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          {attachments.map((item) => (
+            <span
+              key={item.filePath}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 text-primary text-xs font-medium"
+            >
+              <Paperclip className="h-3 w-3" />
+              {item.filename}
+              <button
+                type="button"
+                onClick={() =>
+                  setAttachments((current) =>
+                    current.filter((attachment) => attachment.filePath !== item.filePath),
+                  )
+                }
+                className="hover:text-destructive transition-colors"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
         </div>
       )}
       {uploading && (

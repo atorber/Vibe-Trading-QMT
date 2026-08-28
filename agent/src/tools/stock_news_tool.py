@@ -24,8 +24,10 @@ raises out of :meth:`StockNewsTool.execute`.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,8 +38,8 @@ from src.agent.tools import BaseTool
 logger = logging.getLogger(__name__)
 
 # Eastmoney free news search endpoint (JSON list of CMS articles). It is the
-# same surface the site's search box calls; no auth, IP-throttled.
-_EM_NEWS_URL = "https://search-api-web.eastmoney.com/search/jsonp"
+# same surface the site's search box calls; no auth, IP-throttled. Fetched via
+# :func:`eastmoney_client.get_news_search` (stdlib urllib — requests is blocked).
 
 # A-share / China-market suffixes that route to the Eastmoney news surface.
 _EM_SUFFIXES = ("SH", "SZ", "BJ")
@@ -47,7 +49,8 @@ _YAHOO_SUFFIXES = ("US", "HK")
 # Default broad-market query used when ``scope='global'`` carries no code.
 _GLOBAL_QUERY = "财经"
 
-# Bounds so a noisy upstream can never return an unbounded payload.
+# Eastmoney search highlights keywords with simple HTML tags (e.g. ``<em>``).
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
 # Per-article body trim so the envelope stays compact for the LLM.
@@ -85,6 +88,14 @@ def _bare_query(code: str) -> str:
     return code.strip().split(".", 1)[0].strip()
 
 
+def _plain_text(text: Any) -> str:
+    """Flatten provider HTML fragments to visible plain text."""
+    if not isinstance(text, str):
+        return ""
+    stripped = _HTML_TAG_RE.sub("", text)
+    return html.unescape(stripped)
+
+
 def _snippet(text: Any) -> str:
     """Trim an article body to a bounded plain-text snippet.
 
@@ -95,39 +106,13 @@ def _snippet(text: Any) -> str:
         A whitespace-collapsed snippet capped at ``_SNIPPET_CHARS`` characters,
         or ``""`` when ``text`` is not a usable string.
     """
-    if not isinstance(text, str):
+    plain = _plain_text(text)
+    if not plain:
         return ""
-    collapsed = " ".join(text.split())
+    collapsed = " ".join(plain.split())
     if len(collapsed) <= _SNIPPET_CHARS:
         return collapsed
     return collapsed[:_SNIPPET_CHARS].rstrip() + "…"
-
-
-def _decode_jsonp(payload: Any) -> Any:
-    """Decode an Eastmoney response that may arrive JSON or JSONP-wrapped.
-
-    The search endpoint usually returns a JSON object, but can echo a
-    ``callback(...)`` JSONP envelope. A single outer call wrapper is stripped
-    before parsing.
-
-    Args:
-        payload: The decoded body from the throttled client (``dict`` already, or
-            a raw ``str`` when JSONP-wrapped).
-
-    Returns:
-        The decoded object, or ``None`` when nothing parseable is found.
-    """
-    if isinstance(payload, dict):
-        return payload
-    if not isinstance(payload, str):
-        return None
-    start = payload.find("(")
-    end = payload.rfind(")")
-    inner = payload[start + 1 : end] if start != -1 and end > start else payload
-    try:
-        return json.loads(inner)
-    except (ValueError, TypeError):
-        return None
 
 
 def _em_article(raw: dict[str, Any]) -> dict[str, Any]:
@@ -159,11 +144,11 @@ def _fetch_eastmoney_news(query: str, limit: int) -> list[dict[str, Any]]:
         A capped list of compact article records; empty when none.
 
     Raises:
-        requests.RequestException: Network failure, propagated to the caller.
-        requests.HTTPError: Non-2xx response status.
+        urllib.error.URLError: Network failure, propagated to the caller.
+        urllib.error.HTTPError: Non-2xx response status.
         ValueError: Body is not valid JSON.
     """
-    param = json.dumps(
+    decoded = eastmoney_client.get_news_search(
         {
             "uid": "",
             "keyword": query,
@@ -178,14 +163,8 @@ def _fetch_eastmoney_news(query: str, limit: int) -> list[dict[str, Any]]:
                     "pageSize": limit,
                 }
             },
-        },
-        ensure_ascii=False,
+        }
     )
-    payload = eastmoney_client.get_json(
-        _EM_NEWS_URL,
-        params={"cb": "", "param": param, "_": "0"},
-    )
-    decoded = _decode_jsonp(payload)
     if not isinstance(decoded, dict):
         return []
     result = decoded.get("result")
