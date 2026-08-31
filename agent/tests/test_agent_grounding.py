@@ -384,6 +384,68 @@ def test_provider_spellings_of_one_instrument_are_one_identity(
     assert authorization.allowed is True
 
 
+def test_binance_pair_resolution_authorizes_crypto_consumers(tmp_path: Path) -> None:
+    """Issue #1234: an exact connector pair must survive unrelated Yahoo hits."""
+    ledger = GroundingLedger(
+        run_dir=tmp_path,
+        user_message="Check the ETH-USDT orderbook and current price.",
+    )
+    before_resolution = ledger.authorized_symbols
+    resolver = ledger.authorize_tool_call(
+        "search_symbol",
+        {"query": "ETH-USDT"},
+        batch_authorized_symbols=before_resolution,
+        call_id="resolve-crypto",
+    )
+    assert resolver.allowed is True
+
+    ledger.ingest_tool_result(
+        tool_name="search_symbol",
+        arguments={"query": "ETH-USDT"},
+        result=json.dumps(
+            {
+                "ok": True,
+                "source": "symbol_search",
+                "data": {
+                    "query": "ETH-USDT",
+                    "count": 2,
+                    "sources": {"binance": "ok", "yahoo": "ok"},
+                    "candidates": [
+                        {
+                            "symbol": "ETH-USDT",
+                            "market": "crypto",
+                            "type": "cryptocurrency",
+                            "exchange": "BINANCE",
+                            "source": "binance",
+                        },
+                        {
+                            "symbol": "AETHUSDT-USD",
+                            "market": "global",
+                            "type": "cryptocurrency",
+                            "exchange": "CCC",
+                            "source": "yahoo",
+                        },
+                    ],
+                },
+            }
+        ),
+        call_id="resolve-crypto",
+        success=True,
+    )
+
+    authorization = ledger.authorize_tool_call(
+        "orderbook_depth",
+        {"symbol": "ETH-USDT", "exchange": "binance"},
+        batch_authorized_symbols=ledger.authorized_symbols,
+        batch_identity_status=ledger.identity_status,
+        call_id="crypto-book",
+    )
+
+    assert ledger.identity_status == "locked"
+    assert ledger.authorized_symbols == {"ETH-USDT"}
+    assert authorization.allowed is True
+
+
 def test_stale_history_identity_does_not_unlock_new_subject(tmp_path: Path) -> None:
     """A previous turn's AAPL identity cannot authorize a SpaceX price request."""
     ledger = GroundingLedger(

@@ -19,6 +19,11 @@ from src.portfolio.config import (
     PortfolioSource,
     source_catalog,
 )
+from src.portfolio.compatibility import (
+    adapt_and_validate_payloads,
+    ensure_supported_currencies,
+    profile_compatibility,
+)
 from src.portfolio.normalization import (
     STABLECOINS,
     account_cash_usd,
@@ -37,10 +42,32 @@ from src.trading.types import TradingProfile
 # not (see ``src.market_data._SOURCE_PATTERNS``).
 _RISK_XRAY_MAX_SYMBOLS = 50
 PORTFOLIO_VALUATION_VERSION = 2
-_LOADER_MARKET_SUFFIXES = frozenset(
-    {"US", "HK", "SZ", "SH", "BJ", "KS", "KQ", "NS", "BO", "TO", "V"}
-)
+_LOADER_MARKET_SUFFIXES = frozenset({"US", "HK", "SZ", "SH", "BJ", "KS", "KQ", "NS", "BO", "TO", "V"})
 _NON_EQUITY_ASSET_TYPES = frozenset({"crypto", "stablecoin", "cash"})
+
+
+_AUTH_REQUIRED_MARKERS = (
+    "not_authorized",
+    "not authorized",
+    "authorization required",
+    "oauth authorization required",
+    "invalid_grant",
+    "token expired",
+    "oauth token missing",
+    "connector authorize",
+)
+
+
+def _authorization_required(payload: dict[str, Any]) -> bool:
+    """Return whether a connector failure explicitly asks for OAuth renewal."""
+    status = str(payload.get("status") or "").strip().lower()
+    if status in {"not_authorized", "unauthorized"}:
+        return True
+    message = " ".join(
+        str(payload.get(key) or "")
+        for key in ("error", "error_code", "error_type")
+    ).lower()
+    return any(marker in message for marker in _AUTH_REQUIRED_MARKERS)
 
 
 def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
@@ -77,11 +104,7 @@ def _contains_system_exit(error: BaseException) -> bool:
     if isinstance(error, SystemExit):
         return True
     nested = getattr(error, "exceptions", ())
-    return any(
-        _contains_system_exit(item)
-        for item in nested
-        if isinstance(item, BaseException)
-    )
+    return any(_contains_system_exit(item) for item in nested if isinstance(item, BaseException))
 
 
 def _quote_price(payload: dict[str, Any]) -> Decimal | None:
@@ -134,7 +157,9 @@ class PortfolioService:
             progress_callback: Called as ``(source_id, status, error)`` while a
                 refresh walks its sources.
         """
-        self._use_longbridge_worker = get_account is None and get_positions is None
+        self._use_connection_scoped_reads = get_account is None and get_positions is None
+        self._use_connection_scoped_quotes = get_quote is None
+        self._use_longbridge_worker = self._use_connection_scoped_reads
         if get_account is None or get_positions is None or get_quote is None:
             from src.trading import service as trading
 
@@ -215,10 +240,7 @@ class PortfolioService:
         settings = self.settings_store.load()
         sources = [source for source in settings.sources if source.enabled]
         if not sources:
-            raise RuntimeError(
-                "Add and enable at least one read-only account on the Portfolio "
-                "page before refreshing"
-            )
+            raise RuntimeError("Add and enable at least one read-only account on the Portfolio page before refreshing")
         usd_cny, usd_hkd, fx_at, fx_stale = self._rates()
         refreshed_at = _now()
         results: dict[str, dict[str, Any]] = {}
@@ -234,10 +256,19 @@ class PortfolioService:
                 if self._progress_callback is not None:
                     self._progress_callback(source.id, "ok", None)
             except Exception as exc:  # read failures are isolated per connector
+                try:
+                    _, failed_profile = self._connection_profile(source)
+                    auth_required = failed_profile.transport == "remote_mcp" and _authorization_required(
+                        {"error": str(exc)}
+                    )
+                except Exception:
+                    auth_required = False
                 results[source.id] = {
                     "status": "error",
                     "error_code": type(exc).__name__,
                     "error": str(exc)[:300],
+                    "failure_kind": "authorization" if auth_required else "transient",
+                    "reconnect_required": auth_required,
                 }
                 if self._progress_callback is not None:
                     self._progress_callback(source.id, "error", str(exc)[:160])
@@ -249,14 +280,9 @@ class PortfolioService:
             connection, profile = self._connection_profile(source)
             broker = profile.connector
             if result["status"] != "ok":
-                accounts.append(
-                    self._failed_account(source, connection.profile_id, profile, result)
-                )
+                accounts.append(self._failed_account(source, connection.profile_id, profile, result))
                 continue
-            broker_positions = [
-                value_position(row, usd_hkd=usd_hkd, usd_cny=usd_cny)
-                for row in result["positions"]
-            ]
+            broker_positions = [value_position(row, usd_hkd=usd_hkd, usd_cny=usd_cny) for row in result["positions"]]
             priced_total = sum(
                 (_decimal(row.get("market_value_usd")) for row in broker_positions),
                 Decimal("0"),
@@ -306,6 +332,7 @@ class PortfolioService:
                     "priced_position_count": priced_count,
                     "unpriced_position_count": len(broker_positions) - priced_count,
                     "auth": auth_metadata(profile),
+                    "portfolio_compatibility": profile_compatibility(profile),
                 }
             )
             positions.extend(broker_positions)
@@ -319,12 +346,8 @@ class PortfolioService:
         # Every enabled source produces exactly one account row, so a snapshot
         # is complete only when none of them failed.
         complete = all(row["status"] == "ok" for row in accounts)
-        priced_usd = sum(
-            (_decimal(row.get("priced_value_usd")) for row in accounts), Decimal("0")
-        )
-        cash_usd = sum(
-            (_decimal(row.get("cash_usd")) for row in accounts), Decimal("0")
-        )
+        priced_usd = sum((_decimal(row.get("priced_value_usd")) for row in accounts), Decimal("0"))
+        cash_usd = sum((_decimal(row.get("cash_usd")) for row in accounts), Decimal("0"))
         unpriced_usd = sum(
             (_decimal(row.get("unpriced_or_other_usd")) for row in accounts),
             Decimal("0"),
@@ -345,9 +368,7 @@ class PortfolioService:
                 "priced_usd": _number(priced_usd),
                 "cash_usd": _number(cash_usd),
                 "unpriced_or_other_usd": _number(unpriced_usd),
-                "identified_coverage": (
-                    _number(identified_usd / total_usd) if total_usd > 0 else 0.0
-                ),
+                "identified_coverage": (_number(identified_usd / total_usd) if total_usd > 0 else 0.0),
             },
             "fx": {
                 "usd_cny": _number(usd_cny),
@@ -399,11 +420,14 @@ class PortfolioService:
             "status": "error",
             "error": result.get("error"),
             "error_code": result.get("error_code"),
+            "failure_kind": result.get("failure_kind", "transient"),
+            "reconnect_required": bool(result.get("reconnect_required")),
             "last_success_at": cached["created_at"] if cached is not None else None,
             "total_usd": None,
             "total_cny": None,
             "position_count": 0,
             "auth": auth_metadata(profile),
+            "portfolio_compatibility": profile_compatibility(profile),
         }
 
     def latest(self) -> dict[str, Any] | None:
@@ -418,14 +442,29 @@ class PortfolioService:
             return None
         if snapshot.get("valuation_version") != PORTFOLIO_VALUATION_VERSION:
             return None
-        enabled = {
-            source.id for source in self.settings_store.load().sources if source.enabled
-        }
-        observed = {
-            str(account.get("source_id") or account.get("broker"))
+        settings = self.settings_store.load()
+        enabled_sources = [source for source in settings.sources if source.enabled]
+        enabled = {source.id for source in enabled_sources}
+        observed = {str(account.get("source_id") or account.get("broker")) for account in snapshot.get("accounts", [])}
+        if not enabled or observed != enabled:
+            return None
+
+        compatibility_by_source = {}
+        for source in enabled_sources:
+            try:
+                _, profile = self._connection_profile(source)
+            except ValueError:
+                continue
+            compatibility_by_source[source.id] = profile_compatibility(profile)
+        snapshot["accounts"] = [
+            {
+                **account,
+                "portfolio_compatibility": account.get("portfolio_compatibility")
+                or compatibility_by_source.get(str(account.get("source_id") or account.get("broker"))),
+            }
             for account in snapshot.get("accounts", [])
-        }
-        return snapshot if enabled and observed == enabled else None
+        ]
+        return snapshot
 
     def reconnect_source(self, source_id: str) -> dict[str, Any]:
         """Run a source's interactive OAuth flow on explicit user request.
@@ -447,9 +486,7 @@ class PortfolioService:
         from src.tools.mcp import MCPServerAdapter
 
         source, profile, server = self.reconnect_target(source_id)
-        authorize_timeout = float(
-            get_env_config().agent_tuning.vibe_live_authorize_timeout_s or 300
-        )
+        authorize_timeout = float(get_env_config().agent_tuning.vibe_live_authorize_timeout_s or 300)
         if hasattr(server, "model_copy"):
             updates = {}
             if float(server.init_timeout or 0) < authorize_timeout:
@@ -471,9 +508,7 @@ class PortfolioService:
         except BaseException as exc:
             if not _contains_system_exit(exc):
                 raise
-            raise RuntimeError(
-                "OAuth callback startup failed; authorization stopped safely"
-            ) from exc
+            raise RuntimeError("OAuth callback startup failed; authorization stopped safely") from exc
         return {
             "status": "ok",
             "authorized": True,
@@ -486,11 +521,7 @@ class PortfolioService:
         from src.config.loader import load_agent_config
 
         source = next(
-            (
-                item
-                for item in self.settings_store.load().sources
-                if item.id == source_id
-            ),
+            (item for item in self.settings_store.load().sources if item.id == source_id),
             None,
         )
         if source is None:
@@ -502,9 +533,7 @@ class PortfolioService:
         if server is None:
             raise RuntimeError(f"the {profile.connector} MCP connection is not configured")
         if server.auth is None:
-            raise RuntimeError(
-                f"the {profile.connector} MCP connection does not configure OAuth"
-            )
+            raise RuntimeError(f"the {profile.connector} MCP connection does not configure OAuth")
         return source, profile, server
 
     def history(self, limit: int = 180) -> list[dict[str, Any]]:
@@ -633,9 +662,7 @@ class PortfolioService:
         head, _, suffix = symbol.rpartition(".")
         if head and suffix in _LOADER_MARKET_SUFFIXES:
             return symbol
-        currency = str(
-            position.get("price_currency") or position.get("currency") or ""
-        ).upper()
+        currency = str(position.get("price_currency") or position.get("currency") or "").upper()
         market = str(position.get("market") or "").upper()
         if currency == "HKD" or market == "HK":
             return f"{symbol}.HK" if symbol.isdigit() else None
@@ -758,9 +785,7 @@ class PortfolioService:
             for key in ("market_value_usd", "market_value_cny", "unrealized_pnl_usd"):
                 item[key] = _number(item[key])
             result.append(item)
-        return sorted(
-            result, key=lambda row: _decimal(row["market_value_usd"]), reverse=True
-        )
+        return sorted(result, key=lambda row: _decimal(row["market_value_usd"]), reverse=True)
 
     @staticmethod
     def _enrich_position_names(broker: str, rows: list[dict[str, Any]]) -> None:
@@ -803,18 +828,12 @@ class PortfolioService:
         """
         connection, profile = self._connection_profile(source)
         if not profile.readonly:
-            raise RuntimeError(
-                "portfolio sources must use a read-only connector profile"
-            )
+            raise RuntimeError("portfolio sources must use a read-only connector profile")
         broker = profile.connector
         profile_id = profile.id
         longbridge_batch: dict[str, Any] | None = None
-        if (
-            broker == "longbridge"
-            and profile_id == "longbridge-live-sdk-readonly"
-            and self._use_longbridge_worker
-        ):
-            isolated = self._read_longbridge_isolated()
+        if broker == "longbridge" and profile_id == "longbridge-live-sdk-readonly" and self._use_longbridge_worker:
+            isolated = self._read_longbridge_isolated(connection.id)
             account = isolated["account"]
             positions_payload = isolated["positions"]
             longbridge_batch = isolated.get("quotes")
@@ -824,7 +843,9 @@ class PortfolioService:
                 # A dashboard refresh must never open a browser. reconnect_source()
                 # is the one explicit interactive path.
                 read_options["interactive_oauth"] = False
-            elif profile.transport == "local_plugin":
+            elif profile.transport in {"broker_sdk", "local_plugin"} and (
+                profile.transport == "local_plugin" or self._use_connection_scoped_reads
+            ):
                 read_options["connection_id"] = connection.id
             account = self._get_account(profile_id, **read_options)
             positions_payload = self._get_positions(profile_id, **read_options)
@@ -833,6 +854,7 @@ class PortfolioService:
                 raise RuntimeError(
                     str(payload.get("error") or f"{broker} {label} read failed")
                 )
+        account, positions_payload = adapt_and_validate_payloads(broker, account, positions_payload)
         normalized_rows = [
             normalize_position(broker, raw)
             for raw in positions_payload.get("positions", [])
@@ -856,14 +878,10 @@ class PortfolioService:
                 "ok",
                 "success",
             }:
-                longbridge_price_error = str(
-                    longbridge_batch.get("error") or "Longbridge quote read failed"
-                )[:160]
+                longbridge_price_error = str(longbridge_batch.get("error") or "Longbridge quote read failed")[:160]
         elif broker == "longbridge" and self._get_longbridge_quotes is not None:
             try:
-                batch = self._get_longbridge_quotes(
-                    [str(row["quote_symbol"]) for row in normalized_rows]
-                )
+                batch = self._get_longbridge_quotes([str(row["quote_symbol"]) for row in normalized_rows])
                 longbridge_prices = {
                     str(item.get("symbol") or "").upper(): _decimal(item.get("last"))
                     for item in batch.get("quotes", [])
@@ -879,7 +897,7 @@ class PortfolioService:
             if quantity == 0:
                 continue
             try:
-                if broker == "binance" and normalized["symbol"] in STABLECOINS:
+                if broker in {"binance", "okx"} and normalized["symbol"] in STABLECOINS:
                     normalized["market_price"] = 1.0
                     normalized["price_currency"] = "USD"
                     normalized["pricing_basis"] = "USDT/USD proxy"
@@ -887,15 +905,11 @@ class PortfolioService:
                     normalized["price_currency"] = normalized["currency"]
                     normalized["pricing_basis"] = f"{broker} position snapshot"
                 elif broker == "longbridge" and longbridge_prices is not None:
-                    price = longbridge_prices.get(
-                        str(normalized["quote_symbol"]).upper()
-                    )
+                    price = longbridge_prices.get(str(normalized["quote_symbol"]).upper())
                     normalized["market_price"] = _number(price) if price else None
                     normalized["price_currency"] = normalized["currency"]
                     normalized["pricing_basis"] = (
-                        "Longbridge official quote"
-                        if longbridge_batch is not None
-                        else "Fallback market quote"
+                        "Longbridge official quote" if longbridge_batch is not None else "Fallback market quote"
                     )
                     if not price and longbridge_price_error:
                         normalized["price_error"] = longbridge_price_error
@@ -910,6 +924,7 @@ class PortfolioService:
                         **(
                             {"connection_id": connection.id}
                             if profile.transport == "local_plugin"
+                            or (profile.transport == "broker_sdk" and self._use_connection_scoped_quotes)
                             else {}
                         ),
                     )
@@ -919,6 +934,7 @@ class PortfolioService:
             except Exception as exc:
                 normalized["price_error"] = str(exc)[:160]
             rows.append(normalized)
+        ensure_supported_currencies(rows, account)
         return {
             "source_id": source.id,
             "profile_id": connection.profile_id,
@@ -930,7 +946,7 @@ class PortfolioService:
         }
 
     @staticmethod
-    def _read_longbridge_isolated() -> dict[str, Any]:
+    def _read_longbridge_isolated(connection_id: str) -> dict[str, Any]:
         """Read Longbridge in a throwaway subprocess and parse its payload.
 
         Returns:
@@ -942,7 +958,12 @@ class PortfolioService:
         """
         marker = "VIBE_PORTFOLIO_JSON="
         process = subprocess.run(
-            [sys.executable, "-m", "src.portfolio.longbridge_worker"],
+            [
+                sys.executable,
+                "-m",
+                "src.portfolio.longbridge_worker",
+                connection_id,
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -960,9 +981,7 @@ class PortfolioService:
         if payload.get("error"):
             raise RuntimeError(f"Longbridge isolated reader failed: {payload['error']}")
         if "account" not in payload or "positions" not in payload:
-            raise RuntimeError(
-                "Longbridge isolated reader returned an incomplete payload"
-            )
+            raise RuntimeError("Longbridge isolated reader returned an incomplete payload")
         return payload
 
     def _rates(self) -> tuple[Decimal, Decimal, str, bool]:
@@ -984,9 +1003,7 @@ class PortfolioService:
             cny = self.store.load_fx("USD", "CNY")
             hkd = self.store.load_fx("USD", "HKD")
             if cny is None or hkd is None:
-                raise RuntimeError(
-                    "FX service unavailable and no prior USD/CNY + USD/HKD cache exists"
-                )
+                raise RuntimeError("FX service unavailable and no prior USD/CNY + USD/HKD cache exists")
             return _decimal(cny[0]), _decimal(hkd[0]), min(cny[1], hkd[1]), True
 
     @staticmethod
@@ -997,12 +1014,8 @@ class PortfolioService:
             ``(usd_cny, usd_hkd, fetched_at)``.
         """
         url = "https://api.frankfurter.app/latest?from=USD&to=CNY,HKD"
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "Vibe-Trading/portfolio"}
-        )
-        with urllib.request.urlopen(
-            request, timeout=8
-        ) as response:  # noqa: S310 - fixed HTTPS host
+        request = urllib.request.Request(url, headers={"User-Agent": "Vibe-Trading/portfolio"})
+        with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - fixed HTTPS host
             payload = json.load(response)
         return (
             _decimal(payload["rates"]["CNY"]),
@@ -1011,9 +1024,7 @@ class PortfolioService:
         )
 
     @staticmethod
-    def _warnings(
-        accounts: list[dict[str, Any]], positions: list[dict[str, Any]], fx_stale: bool
-    ) -> list[str]:
+    def _warnings(accounts: list[dict[str, Any]], positions: list[dict[str, Any]], fx_stale: bool) -> list[str]:
         """Describe every reason this snapshot must be read with caution.
 
         Args:
@@ -1030,28 +1041,29 @@ class PortfolioService:
                 "Exchange-rate service unavailable; valued with the last "
                 "successfully fetched USD/CNY and USD/HKD rates."
             )
-        failed = [
-            str(row.get("label") or row["broker"])
-            for row in accounts
-            if row["status"] != "ok"
-        ]
+        failed = [str(row.get("label") or row["broker"]) for row in accounts if row["status"] != "ok"]
         if failed:
             warnings.append(
                 "These sources failed to refresh and their value is excluded "
                 "from the totals, positions and combined holdings, so the "
                 "portfolio shown here is incomplete: " + ", ".join(failed) + "."
             )
-        unpriced = [
-            f"{row['broker']}:{row['symbol']}"
-            for row in positions
-            if not row.get("priced")
-        ]
+        unpriced = [f"{row['broker']}:{row['symbol']}" for row in positions if not row.get("priced")]
         if unpriced:
+            warnings.append("No price available for these positions: " + ", ".join(unpriced[:20]))
+        experimental = [
+            str(row.get("label") or row.get("broker"))
+            for row in accounts
+            if row.get("portfolio_compatibility", {}).get("level") == "experimental"
+        ]
+        if experimental:
             warnings.append(
-                "No price available for these positions: " + ", ".join(unpriced[:20])
+                "Experimental portfolio connectors require broker-specific "
+                "verification: " + ", ".join(experimental) + "."
             )
-        if any(row.get("broker") == "binance" for row in positions):
-            warnings.append(
-                "Binance spot balances are valued with USDT treated as 1 USD."
-            )
+        crypto_proxies = sorted(
+            {str(row.get("broker")) for row in positions if row.get("broker") in {"binance", "okx"}}
+        )
+        if crypto_proxies:
+            warnings.append(", ".join(crypto_proxies) + " spot balances are valued with USDT treated as 1 USD.")
         return warnings

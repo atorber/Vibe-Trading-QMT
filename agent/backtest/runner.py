@@ -85,6 +85,15 @@ class BacktestConfigSchema(BaseModel):
     initial_cash: float = Field(default=1_000_000, gt=0, allow_inf_nan=False)
     fundamental_fields: Optional[Dict[str, List[str]]] = None
     event_feeds: Optional[List[Dict[str, Any]]] = None
+    # An indicator with a long lookback needs bars from before the period the
+    # user asked about. Declaring the boundary keeps those bars out of the
+    # performance: either as a bar count, or as the date evaluation starts.
+    # Only the shapes are checked here -- whether the boundary leaves anything
+    # to evaluate depends on the loaded calendar, so the one rule that decides
+    # it lives in `engines.base.evaluation_start_index`, which every engine and
+    # every direct-API caller passes through.
+    warmup_bars: Optional[int] = Field(default=None, ge=0)
+    evaluation_start_date: Optional[str] = None
 
     @field_validator("codes")
     @classmethod
@@ -102,6 +111,19 @@ class BacktestConfigSchema(BaseModel):
             pd.Timestamp(v)
         except Exception:
             raise ValueError(f"invalid date format: {v!r} (expected YYYY-MM-DD)")
+        return v
+
+    @field_validator("evaluation_start_date")
+    @classmethod
+    def valid_evaluation_start(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            pd.Timestamp(v)
+        except Exception:
+            raise ValueError(
+                f"invalid evaluation_start_date: {v!r} (expected YYYY-MM-DD)"
+            ) from None
         return v
 
     @field_validator("interval")
@@ -802,6 +824,7 @@ _MARKET_TO_SOURCE = {
     "india_equity": "yahoo",
     "kr_equity": "pykrx",
     "ca_equity": "yahoo",
+    "uk_equity": "yahoo",
     "vietnam_equity": "yahoo",
     "crypto": "okx",
     "futures": "tushare",
@@ -1322,7 +1345,7 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
         from backtest.engines.crypto import CryptoEngine
         return CryptoEngine(config)
     elif source in ("tushare", "akshare"):
-        if markets & {"us_equity", "hk_equity", "ca_equity"}:
+        if markets & {"us_equity", "hk_equity", "ca_equity", "uk_equity"}:
             from backtest.engines.global_equity import GlobalEquityEngine
             market = _detect_submarket(codes)
             return GlobalEquityEngine(config, market=market)
@@ -1344,7 +1367,7 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
         # Sources without a dedicated branch (local, stooq, ...): follow the
         # instrument market rather than the loader name, so e.g. a local
         # AAPL.US dataset gets US-equity execution rules instead of crypto.
-        if markets & {"us_equity", "hk_equity", "ca_equity"}:
+        if markets & {"us_equity", "hk_equity", "ca_equity", "uk_equity"}:
             from backtest.engines.global_equity import GlobalEquityEngine
             market = _detect_submarket(codes)
             return GlobalEquityEngine(config, market=market)

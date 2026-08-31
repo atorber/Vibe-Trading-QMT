@@ -142,6 +142,41 @@ describe("RunDetail page", () => {
     expect(screen.queryByText("OLD_CODE")).not.toBeInTheDocument();
   });
 
+  it("collapses an expanded prompt when navigating to another run", async () => {
+    const firstPrompt = "First run prompt\n".repeat(8).trim();
+    const secondPrompt = "Second run prompt\n".repeat(8).trim();
+    apiMock.getRun.mockImplementation((runId: string) => Promise.resolve({
+      status: "success",
+      run_id: runId,
+      prompt: runId === "first" ? firstPrompt : secondPrompt,
+    }));
+    apiMock.getRunCode.mockResolvedValue({});
+
+    const router = renderRunDetail("/runs/first");
+    const expandButton = await screen.findByRole("button", { name: "Show full prompt" });
+    const firstPromptElement = expandButton.previousElementSibling;
+    expect(firstPromptElement).toHaveTextContent("First run prompt");
+    expect(firstPromptElement).toHaveClass("line-clamp-3");
+    expect(expandButton).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(expandButton);
+    expect(firstPromptElement).not.toHaveClass("line-clamp-3");
+    expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+
+    await act(async () => {
+      await router.navigate("/runs/second");
+    });
+
+    const secondExpandButton = await screen.findByRole("button", { name: "Show full prompt" });
+    const secondPromptElement = secondExpandButton.previousElementSibling;
+    expect(secondPromptElement).toHaveTextContent("Second run prompt");
+    expect(secondPromptElement).toHaveClass("line-clamp-3");
+    expect(secondExpandButton).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("ignores a chart response that finishes after the route changes", async () => {
     const oldChart = deferred<RunData>();
     apiMock.getRun.mockImplementation((runId: string, params: Record<string, string>) => {

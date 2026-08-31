@@ -30,12 +30,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 from backtest.loaders._http import (
-    DEFAULT_USER_AGENT,
     resolve_min_interval,
     throttled_get,
     throttled_get_json,
@@ -179,9 +178,12 @@ def get_chart(
         range_: Relative range string; takes precedence over period1/period2.
 
     Returns:
-        Ascending list of ``{trade_date, open, high, low, close, volume}`` dicts
-        (``trade_date`` is the bar's epoch-second timestamp). Empty when Yahoo
-        reports no data for the symbol/window.
+        ``(rows, currency)`` where ``rows`` is an ascending list of
+        ``{trade_date, open, high, low, close, volume}`` dicts (``trade_date``
+        is the bar's epoch-second timestamp) — empty when Yahoo reports no
+        data — and ``currency`` is the quote currency declared by the chart
+        meta (e.g. ``"USD"``, ``"GBP"``, ``"EUR"``, or the pence marker
+        ``"GBp"`` LSE names quote in). Rows-only callers unpack the tuple.
 
     Raises:
         requests.RequestException: On a network/HTTP failure.
@@ -207,8 +209,17 @@ def get_chart(
     return _parse_chart(payload, yahoo_symbol)
 
 
-def _parse_chart(payload: Any, yahoo_symbol: str) -> List[Dict[str, Any]]:
-    """Convert a v8 chart payload into ascending OHLCV row dicts."""
+_GBP_PENCE_CURRENCY = "GBp"
+
+
+def _parse_chart(payload: Any, yahoo_symbol: str) -> Tuple[List[Dict[str, Any]], str]:
+    """Convert a v8 chart payload into ascending OHLCV row dicts.
+
+    Returns:
+        ``(rows, currency)``: rows as in :func:`get_chart`, plus the quote
+        currency declared in the chart meta (for example ``"GBp"``, ``"GBP"``,
+        or ``"USD"`` for different LSE lines).
+    """
     chart = (payload or {}).get("chart") or {}
     error = chart.get("error")
     if error:
@@ -217,8 +228,9 @@ def _parse_chart(payload: Any, yahoo_symbol: str) -> List[Dict[str, Any]]:
 
     results = chart.get("result") or []
     if not results:
-        return []
+        return [], ""
     result = results[0] or {}
+    currency = (result.get("meta") or {}).get("currency") or ""
 
     timestamps = result.get("timestamp") or []
     quotes = (((result.get("indicators") or {}).get("quote")) or [{}])[0] or {}
@@ -232,7 +244,7 @@ def _parse_chart(payload: Any, yahoo_symbol: str) -> List[Dict[str, Any]]:
         row: Dict[str, Any] = {"trade_date": ts}
         row.update({field: _to_float(values[field]) for field in _QUOTE_FIELDS})
         rows.append(row)
-    return rows
+    return rows, currency
 
 
 def _at(series: Any, index: int) -> Any:

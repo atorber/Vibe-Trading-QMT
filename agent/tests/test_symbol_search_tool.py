@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+from src.trading import profiles as trading_profiles
+from src.trading import service as trading_service
 from src.tools import symbol_search_tool as ss
 
 
@@ -321,6 +323,60 @@ class TestSymbolSearchSuccess:
         payload = json.loads(out)
         assert payload["data"]["sources"]["eastmoney"] == "ok"
 
+    def test_selected_binance_profile_resolves_exact_pair_without_yahoo_collision(
+        self, monkeypatch
+    ):
+        """Issue #1234: an exchange pair must not resolve to a similarly named asset."""
+        connector_calls: list[tuple[str, str, int]] = []
+
+        def _search_connector(query: str, profile_id: str, *, limit: int, **_):
+            connector_calls.append((query, profile_id, limit))
+            return {
+                "status": "ok",
+                "connector": "binance",
+                "profile_id": profile_id,
+                "instruments": [
+                    {
+                        "symbol": "ETH-USDT",
+                        "native_symbol": "ETH/USDT",
+                        "exchange_symbol": "ETHUSDT",
+                        "market": "crypto",
+                        "type": "cryptocurrency",
+                        "exchange": "BINANCE",
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(
+            trading_profiles,
+            "load_selected_profile_id",
+            lambda: "binance-paper-trade",
+        )
+        monkeypatch.setattr(trading_service, "search_instruments", _search_connector)
+
+        yahoo_collision = [
+            {
+                "symbol": "AETHUSDT-USD",
+                "shortname": "Aave Ethereum USDT USD",
+                "exchange": "CCC",
+                "quoteType": "CRYPTOCURRENCY",
+            }
+        ]
+        with patch.object(
+            ss.eastmoney_client,
+            "get_json",
+            return_value={"QuotationCodeTable": {"Data": []}},
+        ), patch.object(ss.yahoo_client, "search", return_value=yahoo_collision):
+            data = json.loads(
+                ss.SymbolSearchTool().execute(query="ETH-USDT", limit=5)
+            )["data"]
+
+        assert connector_calls == [("ETH-USDT", "binance-paper-trade", 5)]
+        assert data["sources"]["binance"] == "ok"
+        assert [candidate["symbol"] for candidate in data["candidates"]] == [
+            "ETH-USDT"
+        ]
+
 
 class TestSymbolSearchErrors:
     """Error envelopes and per-source resilience."""
@@ -352,6 +408,43 @@ class TestSymbolSearchErrors:
         assert sources["yahoo"] == "ok"
         symbols = {c["symbol"] for c in payload["data"]["candidates"]}
         assert "AAPL.US" in symbols
+
+    def test_binance_pair_lookup_failure_rejects_yahoo_near_match(
+        self, monkeypatch
+    ):
+        """A failed exact-pair lookup must not fall back to a different asset."""
+        monkeypatch.setattr(
+            trading_profiles,
+            "load_selected_profile_id",
+            lambda: "binance-paper-trade",
+        )
+
+        def _fail_connector(*_args, **_kwargs):
+            raise RuntimeError("market catalog unavailable")
+
+        monkeypatch.setattr(trading_service, "search_instruments", _fail_connector)
+        yahoo_collision = [
+            {
+                "symbol": "AETHUSDT-USD",
+                "shortname": "Aave Ethereum USDT USD",
+                "exchange": "CCC",
+                "quoteType": "CRYPTOCURRENCY",
+            }
+        ]
+        with patch.object(ss.yahoo_client, "search", return_value=yahoo_collision), \
+                patch.object(
+                    ss, "_load_public_markets", side_effect=RuntimeError("venue down")
+                ):
+            data = json.loads(
+                ss.SymbolSearchTool().execute(query="ETH-USDT", limit=5)
+            )["data"]
+
+        assert data["sources"]["binance"] == (
+            "connector search failed: market catalog unavailable"
+        )
+        assert data["sources"]["eastmoney"].startswith("skipped:")
+        assert "venue down" in data["sources"]["public_exchange"]
+        assert data["candidates"] == []
 
     def test_sec_lookup_failure_recorded_not_fatal(self):
         with patch.object(
@@ -587,3 +680,85 @@ class TestTickerNameQueryYahooSkip:
 
         search.assert_called_once()
         assert data["sources"]["yahoo"] == "ok"
+
+
+class TestCryptoPairWithoutABrokerConnection:
+    """Resolving an exchange pair must not require a broker account.
+
+    #1242 routes exact pairs through the *selected* Binance connector, which
+    needs a configured profile and credentials. Identity resolution is a
+    read-only lookup against a public catalog — the same unauthenticated ccxt
+    connectivity ``orderbook_depth`` already uses to serve these pairs — so a
+    user with no broker connection must still get an identity rather than
+    nothing (or, before #1234, a near-string Yahoo asset).
+    """
+
+    @staticmethod
+    def _markets(*symbols):
+        return {sym: {"symbol": sym, "spot": True, "active": True} for sym in symbols}
+
+    def _run(self, monkeypatch, query, markets_by_exchange, yahoo=None):
+        monkeypatch.setattr(
+            trading_profiles, "load_selected_profile_id", lambda: "tiger-paper-sdk"
+        )
+
+        def _markets(exchange_id):
+            payload = markets_by_exchange.get(exchange_id)
+            if payload is None:
+                raise RuntimeError(f"{exchange_id} unavailable")
+            return payload
+
+        monkeypatch.setattr(ss, "_load_public_markets", _markets)
+        with patch.object(ss.yahoo_client, "search", return_value=yahoo or []):
+            return json.loads(ss.SymbolSearchTool().execute(query=query, limit=5))["data"]
+
+    def test_pair_resolves_with_no_connector_selected(self, monkeypatch):
+        data = self._run(
+            monkeypatch,
+            "ETH-USDT",
+            {"binance": self._markets("ETH/USDT", "BTC/USDT")},
+            yahoo=[
+                {
+                    "symbol": "AETHUSDT-USD",
+                    "shortname": "Aave Ethereum USDT USD",
+                    "exchange": "CCC",
+                    "quoteType": "CRYPTOCURRENCY",
+                }
+            ],
+        )
+        assert [c["symbol"] for c in data["candidates"]] == ["ETH-USDT"]
+        assert data["candidates"][0]["exchange"] == "BINANCE"
+        assert data["sources"]["public_exchange"] == "ok"
+
+    def test_second_venue_is_consulted_when_the_first_is_down(self, monkeypatch):
+        data = self._run(
+            monkeypatch, "SOL-USDT", {"okx": self._markets("SOL/USDT")}
+        )
+        assert [c["symbol"] for c in data["candidates"]] == ["SOL-USDT"]
+        assert data["candidates"][0]["exchange"] == "OKX"
+
+    def test_a_pair_no_venue_lists_resolves_to_nothing(self, monkeypatch):
+        data = self._run(
+            monkeypatch,
+            "NOTREAL-USDT",
+            {"binance": self._markets("ETH/USDT"), "okx": self._markets("ETH/USDT")},
+        )
+        assert data["candidates"] == []
+        assert data["sources"]["public_exchange"].startswith("skipped:")
+
+    def test_an_equity_query_never_reaches_the_venue_catalogs(self, monkeypatch):
+        called: list[str] = []
+
+        def _markets(exchange_id):
+            called.append(exchange_id)
+            return {}
+
+        monkeypatch.setattr(ss, "_load_public_markets", _markets)
+        monkeypatch.setattr(
+            trading_profiles, "load_selected_profile_id", lambda: "tiger-paper-sdk"
+        )
+        with patch.object(
+            ss.eastmoney_client, "get_json", return_value=_eastmoney_payload()
+        ), patch.object(ss.yahoo_client, "search", return_value=[]):
+            ss.SymbolSearchTool().execute(query="apple", limit=5)
+        assert called == []

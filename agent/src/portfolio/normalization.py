@@ -160,9 +160,7 @@ def normalize_position(broker: str, row: dict[str, Any]) -> dict[str, Any]:
             "exchange": row.get("exchange"),
             "currency": currency,
             "quantity": _number(_decimal(row.get("position", row.get("quantity")))),
-            "cost_price": _number(
-                _decimal(row.get("avg_cost", row.get("average_cost")))
-            ),
+            "cost_price": _number(_decimal(row.get("avg_cost", row.get("average_cost")))),
             "market_price": _number(market_price) if market_price > 0 else None,
             "source_market_value": row.get("market_value"),
             "source_unrealized_pnl": row.get("unrealized_pnl"),
@@ -189,7 +187,7 @@ def normalize_position(broker: str, row: dict[str, Any]) -> dict[str, Any]:
             "updated_at": _now(),
         }
 
-    symbol = str(row.get("symbol") or row.get("code") or "").upper()
+    symbol = str(row.get("symbol") or row.get("code") or row.get("ticker") or "").upper()
     currency, market = _infer_currency_and_market(
         symbol,
         currency=str(row.get("currency") or ""),
@@ -200,21 +198,49 @@ def normalize_position(broker: str, row: dict[str, Any]) -> dict[str, Any]:
     source = str(row.get("source") or ("spot" if broker == "binance" else "account"))
     if not currency:
         currency = (
-            "HKD" if symbol.startswith("HK.") or symbol.endswith(".HK") else "USD"
+            "HKD"
+            if symbol.endswith(".HK") or symbol.startswith("HK.")
+            else "CNY"
+            if symbol.startswith(("SH.", "SZ.", "BJ."))
+            else "USD"
         )
     quantity = _decimal(
         row.get(
-            "quantity", row.get("qty", row.get("position", row.get("position_qty")))
+            "quantity",
+            row.get(
+                "qty",
+                row.get(
+                    "position",
+                    row.get("position_qty", row.get("volume", row.get("units"))),
+                ),
+            ),
         )
     )
     cost = _decimal(
         row.get(
             "cost_price",
-            row.get("average_cost", row.get("avg_cost", row.get("avg_entry_price"))),
+            row.get(
+                "average_cost",
+                row.get(
+                    "avg_cost",
+                    row.get(
+                        "avg_entry_price",
+                        row.get(
+                            "average_price",
+                            row.get("price_open", row.get("open_rate")),
+                        ),
+                    ),
+                ),
+            ),
         )
     )
-    market_price = _decimal(row.get("market_price", row.get("current_price")))
-    source_market_value = row.get("market_value", row.get("market_val"))
+    market_price = _decimal(
+        row.get(
+            "market_price",
+            row.get("current_price", row.get("ltp", row.get("price_current"))),
+        )
+    )
+    source_market_value = row.get("market_value", row.get("market_val", row.get("value")))
     if market_price <= 0 and quantity != 0 and _decimal(source_market_value) > 0:
         market_price = abs(_decimal(source_market_value) / quantity)
     sec_type = str(row.get("sec_type") or "").upper()
@@ -224,25 +250,16 @@ def normalize_position(broker: str, row: dict[str, Any]) -> dict[str, Any]:
         "stablecoin",
     }
     asset_type = declared_asset_type or (
-        "stablecoin"
-        if symbol in STABLECOINS
-        else "crypto" if crypto else "etf" if sec_type == "ETF" else "stock"
+        "stablecoin" if symbol in STABLECOINS else "crypto" if crypto else "etf" if sec_type == "ETF" else "stock"
     )
     return {
         "broker": broker,
         "symbol": symbol,
-        "quote_symbol": str(
-            row.get("quote_symbol")
-            or (f"{symbol}/USDT" if broker == "binance" else symbol)
-        ),
+        "quote_symbol": str(row.get("quote_symbol") or (f"{symbol}/USDT" if broker == "binance" else symbol)),
         "name": str(
             row.get("name")
             or row.get("symbol_name")
-            or (
-                f"{symbol} (Simple Earn)"
-                if source == "simple_earn_flexible"
-                else symbol
-            )
+            or (f"{symbol} (Simple Earn)" if source == "simple_earn_flexible" else symbol)
         ),
         "asset_type": asset_type,
         "market": market,
@@ -253,7 +270,8 @@ def normalize_position(broker: str, row: dict[str, Any]) -> dict[str, Any]:
         "price_currency": str(row.get("price_currency") or currency).upper(),
         "source_market_value": source_market_value,
         "source_unrealized_pnl": row.get(
-            "unrealized_pnl", row.get("unrealized_pl", row.get("pl_val"))
+            "unrealized_pnl",
+            row.get("unrealized_pl", row.get("pnl", row.get("profit"))),
         ),
         "free": row.get("free"),
         "used": row.get("used"),
@@ -302,7 +320,13 @@ def value_position(
         else ((price - cost) * quantity if priced and cost > 0 else None)
     )
     pnl_usd = (
-        pnl_native * fx_to_usd if pnl_native is not None else None
+        _decimal(source_pnl) * fx_to_usd
+        if priced and source_pnl is not None
+        else (price - cost) * quantity * fx_to_usd
+        if priced and cost > 0
+        else pnl_native * fx_to_usd
+        if pnl_native is not None
+        else None
     )
     row.update(
         currency=currency,
@@ -430,16 +454,11 @@ def account_net_assets_usd(
         for row in account.get("summary", []):
             if str(row.get("tag") or "").lower() == "netliquidation":
                 currency = str(row.get("currency") or "USD").upper()
-                candidates[currency] = max(
-                    candidates.get(currency, Decimal("0")), _decimal(row.get("value"))
-                )
+                candidates[currency] = max(candidates.get(currency, Decimal("0")), _decimal(row.get("value")))
         if "USD" in candidates:
             return candidates["USD"]
         return sum(
-            (
-                _to_usd(value, currency, usd_hkd, usd_cny)
-                for currency, value in candidates.items()
-            ),
+            (_to_usd(value, currency, usd_hkd, usd_cny) for currency, value in candidates.items()),
             Decimal("0"),
         )
     nested = account.get("account") if isinstance(account.get("account"), dict) else {}
@@ -465,12 +484,8 @@ def account_net_assets_usd(
             return _to_usd(value, currency, usd_hkd, usd_cny)
     total = Decimal("0")
     for row in account.get("assets", []):
-        value = _decimal(
-            row.get("net_liquidation", row.get("total_assets", row.get("equity")))
-        )
-        total += _to_usd(
-            value, str(row.get("currency") or currency).upper(), usd_hkd, usd_cny
-        )
+        value = _decimal(row.get("net_liquidation", row.get("total_assets", row.get("equity"))))
+        total += _to_usd(value, str(row.get("currency") or currency).upper(), usd_hkd, usd_cny)
     return total if total > 0 else fallback
 
 
@@ -621,18 +636,13 @@ def account_cash_usd(
         for row in account.get("summary", []):
             if str(row.get("tag") or "").lower() in {"totalcashvalue", "cashbalance"}:
                 currency = str(row.get("currency") or "USD").upper()
-                candidates[currency] = max(
-                    candidates.get(currency, Decimal("0")), _decimal(row.get("value"))
-                )
+                candidates[currency] = max(candidates.get(currency, Decimal("0")), _decimal(row.get("value")))
         if "USD" in candidates:
             return max(Decimal("0"), candidates["USD"])
         return max(
             Decimal("0"),
             sum(
-                (
-                    _to_usd(value, currency, usd_hkd, usd_cny)
-                    for currency, value in candidates.items()
-                ),
+                (_to_usd(value, currency, usd_hkd, usd_cny) for currency, value in candidates.items()),
                 Decimal("0"),
             ),
         )

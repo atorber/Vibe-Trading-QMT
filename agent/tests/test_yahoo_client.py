@@ -109,10 +109,12 @@ class TestGetChart:
 
         monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
 
-        rows = yahoo_client.get_chart("AAPL.US", interval="1d", range_="5d")
+        rows, currency = yahoo_client.get_chart("AAPL.US", interval="1d", range_="5d")
 
         assert captured["url"].endswith("/AAPL")
         assert captured["params"] == {"interval": "1d", "range": "5d"}
+        # No meta in this payload -> no declared currency.
+        assert currency == ""
         # Third bar has null OHLC and must be dropped.
         assert len(rows) == 2
         assert rows[0] == {
@@ -134,9 +136,10 @@ class TestGetChart:
 
         monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
 
-        rows = yahoo_client.get_chart("0700.HK", period1=100, period2=200)
+        rows, currency = yahoo_client.get_chart("0700.HK", period1=100, period2=200)
 
         assert rows == []
+        assert currency == ""
         assert captured["params"] == {"interval": "1d", "period1": 100, "period2": 200}
 
     def test_chart_error_raises(self, monkeypatch):
