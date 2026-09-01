@@ -204,13 +204,16 @@ def fetch_market_data(
 
     def _fetch_via_chain(
         src: str, market: str, src_codes: list[str]
-    ) -> tuple[dict[str, Any], str | None, type | None]:
-        """Run the ordered source chain for one group.
+    ) -> tuple[dict[str, Any], str | None, type | None, dict[str, tuple[str, type]]]:
+        """Run the ordered source chain for one group, per symbol.
 
-        Returns ``(data_map, used_source, provider_cls)`` — ``data_map`` keyed
-        by requested symbol -> OHLCV frame (possibly empty), the source name
-        that actually served it, and the serving loader class (both ``None``
-        when every attempt failed).
+        Returns ``(data_map, used_source, provider_cls, symbol_sources)`` —
+        ``data_map`` keyed by requested symbol -> OHLCV frame (possibly
+        empty), ``used_source``/``provider_cls`` the first source that served
+        anything (``None`` when every attempt failed), and ``symbol_sources``
+        mapping each served symbol to the source that actually served it. A
+        partially successful attempt no longer stops the walk: symbols the
+        loader omitted are retried down the chain and merged in.
         """
         chain = _chain_for(src, market)
         # An env-configured order override (MARKET_DATA_ORDER_<MARKET>, set
@@ -239,9 +242,13 @@ def fetch_market_data(
         attempts = attempts[: max(1, max_fallback_attempts)]
 
         data_map: dict[str, Any] = {}
+        symbol_sources: dict[str, tuple[str, type]] = {}
         used_source: str | None = None
         provider_cls: type | None = None
+        remaining = list(dict.fromkeys(src_codes))
         for attempt_src in attempts:
+            if not remaining:
+                break
             try:
                 loader_cls = loader_resolver(attempt_src)
             except NoAvailableSourceError as exc:
@@ -252,24 +259,37 @@ def fetch_market_data(
                 continue
             try:
                 loader = loader_cls()
-                data_map = loader.fetch(src_codes, start_date, end_date, interval=interval)
-                used_source = attempt_src
-                provider_cls = loader_cls
-                if data_map:
-                    break
+                partial = loader.fetch(remaining, start_date, end_date, interval=interval)
             except Exception as exc:  # noqa: BLE001 — contained per-symbol fallback
                 logger.error(
                     "market-data loader %r failed for %s; trying next source in chain: %s",
-                    attempt_src, src_codes, exc,
+                    attempt_src, remaining, exc,
                 )
                 continue
+            if not partial:
+                continue
+            if used_source is None:
+                used_source = attempt_src
+                provider_cls = loader_cls
+            for symbol, df in partial.items():
+                data_map[symbol] = df
+                symbol_sources[symbol] = (attempt_src, loader_cls)
+            remaining = [symbol for symbol in remaining if symbol not in partial]
 
         if used_source and used_source != src:
             logger.info(
                 "market-data source %r unavailable for %s; fell back to %r",
                 src, src_codes, used_source,
             )
-        return data_map, used_source, provider_cls
+        served_elsewhere = sorted(
+            {serve_src for serve_src, _ in symbol_sources.values()} - {used_source}
+        )
+        if served_elsewhere:
+            logger.info(
+                "market-data per-symbol fallback: %s served the remaining symbols %r could not",
+                served_elsewhere, src,
+            )
+        return data_map, used_source, provider_cls, symbol_sources
 
     def _emit(
         symbol: str,
@@ -310,11 +330,17 @@ def fetch_market_data(
             provenance[symbol] = entry
 
     for (src, market), src_codes in groups.items():
-        data_map, used_source, provider_cls = _fetch_via_chain(src, market, src_codes)
+        data_map, used_source, provider_cls, symbol_sources = _fetch_via_chain(
+            src, market, src_codes
+        )
         for symbol, df in data_map.items():
+            symbol_source, symbol_provider_cls = symbol_sources.get(
+                symbol, (used_source, provider_cls)
+            )
             _emit(
                 symbol, df,
-                src=src, used_source=used_source, provider_cls=provider_cls, market=market,
+                src=src, used_source=symbol_source, provider_cls=symbol_provider_cls,
+                market=market,
             )
 
     unresolved = [
@@ -365,7 +391,7 @@ def fetch_market_data(
                 continue
             # Sibling not already resolved — targeted re-fetch of just that
             # symbol through the same market's source chain.
-            sibling_data, used_source, provider_cls = _fetch_via_chain(
+            sibling_data, used_source, provider_cls, _ = _fetch_via_chain(
                 src, market, [sibling]
             )
             if sibling_data:

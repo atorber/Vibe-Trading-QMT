@@ -134,7 +134,9 @@ def _download_history(
         start=start_date,
         end=end_date,
         interval=interval,
-        auto_adjust=False,
+        # Adjusted OHLC like every other loader on the chain (qfq caliber);
+        # volume stays raw on both sides of the comparison.
+        auto_adjust=True,
         progress=False,
     )
 

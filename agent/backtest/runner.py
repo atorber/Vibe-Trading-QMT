@@ -39,6 +39,7 @@ from backtest.engines._market_hooks import (  # noqa: F401  (re-exported)
     _detect_submarket,
     _is_china_futures,
 )
+from backtest.rebalance_mask import RebalanceMask, validate_rebalance_mask
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class BacktestConfigSchema(BaseModel):
     interval: str = "1D"
     engine: str = "daily"
     position_adjustment: Literal["hold", "rebalance"] = "hold"
+    rebalance_mask: RebalanceMask = None
     # Under "rebalance", a resize executes only once the held weight has
     # drifted further than this fraction of its target -- the tolerance band
     # practitioners describe as "rebalance when weights move more than X".
@@ -126,6 +128,11 @@ class BacktestConfigSchema(BaseModel):
             ) from None
         return v
 
+    @field_validator("rebalance_mask")
+    @classmethod
+    def valid_rebalance_mask(cls, v: RebalanceMask) -> RebalanceMask:
+        return validate_rebalance_mask(v)
+
     @field_validator("interval")
     @classmethod
     def valid_interval(cls, v: str) -> str:
@@ -179,6 +186,10 @@ class BacktestConfigSchema(BaseModel):
 
     @model_validator(mode="after")
     def start_before_end(self) -> "BacktestConfigSchema":
+        if self.rebalance_mask is not None and self.position_adjustment != "rebalance":
+            raise ValueError(
+                "rebalance_mask requires position_adjustment='rebalance'"
+            )
         if pd.Timestamp(self.start_date) > pd.Timestamp(self.end_date):
             raise ValueError(
                 f"start_date ({self.start_date}) must be <= end_date ({self.end_date})"

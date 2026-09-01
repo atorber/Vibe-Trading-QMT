@@ -235,6 +235,11 @@ def check_status(config: FutuConfig | None = None) -> dict[str, Any]:
         A health report dict.
     """
     cfg = config or load_config()
+    # ``connection_state``/``error_code``/``last_checked_at`` are the envelope
+    # /live/status reads through a closed vocabulary (live_routes.py
+    # _CONNECTION_STATES / _ERROR_CODES). Omitting them is not a cosmetic gap:
+    # the Web UI treats anything other than "connected"/"ready" as unavailable,
+    # so a working OpenD connection rendered as down. Same shape as longbridge.
     has_runtime_file = config_path().exists()
     report: dict[str, Any] = {
         "status": "ok",
@@ -259,11 +264,11 @@ def check_status(config: FutuConfig | None = None) -> dict[str, Any]:
             "network_unreachable",
             (
                 f"No Futu OpenD gateway is listening at {cfg.host}:{cfg.port}. "
-                "Start Futu_OpenD (GUI), log in, and confirm the API port."
+                "Start Futu_OpenD (GUI) / OpenD, log in, and confirm the API port."
             ),
         )
 
-    if not report["sdk_installed"]:
+    if not report["sdk"]["installed"]:
         return _status_error(
             report,
             "sdk_missing",
@@ -285,7 +290,7 @@ def check_status(config: FutuConfig | None = None) -> dict[str, Any]:
 
 
 def _status_error(report: dict[str, Any], code: str, message: str) -> dict[str, Any]:
-    """Fill a fail-closed Runtime verify envelope without leaking secrets."""
+    """Stamp a failed health report with the closed-vocabulary diagnostics."""
     report.update(
         status="error",
         connection_state="error",
