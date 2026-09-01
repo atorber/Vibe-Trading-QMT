@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 from backtest.loaders import eastmoney_client, sec_edgar_client, yahoo_client
 from src.agent.tools import BaseTool
+from src.symbol_aliases import index_search_candidate, resolve_a_share_index_alias
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +127,10 @@ class SymbolSearchTool(BaseTool):
         "crypto/index/FX from "
         "Yahoo). Exact crypto pairs are checked against the active Binance "
         "profile; other queries search Eastmoney (China/HK/US names and tickers) and Yahoo "
-        "(global) and, for U.S. equities, attaches the SEC CIK. Use this to turn "
-        "an ambiguous name into a concrete symbol before calling get_market_data "
-        'or get_sec_filings. Example: search_symbol(query="apple", limit=5).'
+        "(global) and, for U.S. equities, attaches the SEC CIK. **Do not use this for "
+        "canonical A-share indices** (上证指数→000001.SH, 沪深300→000300.SH, etc.) — "
+        "call get_market_data directly with those codes. Example: "
+        'search_symbol(query="apple", limit=5).'
     )
     parameters = {
         "type": "object",
@@ -174,6 +176,26 @@ class SymbolSearchTool(BaseTool):
             return _error("'query' is required and must be a non-empty string")
 
         limit = _clamp_limit(kwargs.get("limit", _DEFAULT_LIMIT))
+
+        resolved_index = resolve_a_share_index_alias(query)
+        if resolved_index is not None:
+            code, name = resolved_index
+            candidate = index_search_candidate(code, name)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "market": "cn",
+                    "source": "symbol_search",
+                    "data": {
+                        "query": query,
+                        "count": 1,
+                        "candidates": [candidate],
+                        "sources": {"builtin_index_alias": "ok"},
+                        "resolved_alias": True,
+                    },
+                },
+                ensure_ascii=False,
+            )
 
         candidates: List[Dict[str, Any]] = []
         sources: Dict[str, str] = {}

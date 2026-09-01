@@ -381,6 +381,14 @@ class TestSymbolSearchSuccess:
 class TestSymbolSearchErrors:
     """Error envelopes and per-source resilience."""
 
+    def test_builtin_a_share_index_alias_short_circuits(self):
+        out = ss.SymbolSearchTool().execute(query="沪深300")
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["data"]["count"] == 1
+        assert payload["data"]["candidates"][0]["symbol"] == "000300.SH"
+        assert payload["data"]["resolved_alias"] is True
+
     def test_missing_query_returns_error_envelope(self):
         out = ss.SymbolSearchTool().execute(query="   ")
         payload = json.loads(out)

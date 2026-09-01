@@ -1501,7 +1501,7 @@
     "metrics": {
       "total": "Activos totales",
       "change": "Variación de hoy",
-      "changeNote": "Vs. última instantánea de ayer; incluye mercado y flujos de caja",
+      "changeNote": "Vs. última instantánea del día bursátil anterior; incluye mercado y flujos de caja",
       "coverage": "Cobertura de valoración",
       "coverageNote": "Valorado {{priced}} · efectivo {{cash}}",
       "lastComplete": "Última actualización completa",

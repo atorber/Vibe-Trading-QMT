@@ -92,6 +92,12 @@ same-market sources automatically. Only set a concrete source when the user asks
 3. Set any required env key before calling a key-gated tool; if it is missing,
    report the missing key rather than failing silently.
 
+**Same-day A-share market brief** (大盘/板块/资金/新闻): load the
+`a-share-daily-brief` skill first. Use the four canonical index codes with
+`get_market_data(as_of="today", lookback_days=10, source="auto")`, then sector
+ranking, northbound flow, and global news — **once each**. Do not `search_symbol`
+the indices or use `yfinance`/`yahoo` for `.SH`/`.SZ` OHLCV.
+
 ### Source priority (for OHLCV by market)
 
 - **A-shares**: qmt (QMT Bridge) > tencent / mootdx (never banned) > tushare (`TUSHARE_TOKEN`) >

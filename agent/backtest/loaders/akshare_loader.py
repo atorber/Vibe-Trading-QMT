@@ -40,6 +40,29 @@ def _is_a_share(code: str) -> bool:
     return code.upper().endswith((".SZ", ".SH", ".BJ"))
 
 
+def _is_a_share_index(code: str) -> bool:
+    """Detect A-share index symbols (000xxx.SH, 399xxx.SZ)."""
+    upper = code.upper()
+    if upper.endswith(".SH"):
+        digits = upper.split(".")[0]
+        return len(digits) == 6 and digits.isdigit() and digits.startswith("000")
+    if upper.endswith(".SZ"):
+        digits = upper.split(".")[0]
+        return len(digits) == 6 and digits.isdigit() and digits.startswith("399")
+    return False
+
+
+def _akshare_index_symbol(code: str) -> str | None:
+    """Map project index code to akshare ``stock_zh_index_daily`` symbol."""
+    upper = code.upper()
+    if not _is_a_share_index(upper):
+        return None
+    digits, _, suffix = upper.partition(".")
+    return f"{suffix.lower()}{digits}"
+
+
+
+
 def _is_hk(code: str) -> bool:
     return code.upper().endswith(".HK")
 
@@ -146,6 +169,9 @@ class DataLoader:
         if _is_etf_listed(code):
             _require_daily_interval(interval, "etf")
             return self._fetch_etf(ak, code, start_date, end_date)
+        if _is_a_share_index(code):
+            _require_daily_interval(interval, "a_share_index")
+            return self._fetch_a_share_index(ak, code, start_date, end_date)
         if _is_a_share(code):
             return self._fetch_a_share(ak, code, start_date, end_date, interval)
         if _is_us(code):
@@ -159,6 +185,26 @@ class DataLoader:
             return self._fetch_forex(ak, code, start_date, end_date)
         # Default: try A-share
         return self._fetch_a_share(ak, code, start_date, end_date, interval)
+
+    def _fetch_a_share_index(
+        self, ak, code: str, start_date: str, end_date: str,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch A-share index via ``stock_zh_index_daily``."""
+        symbol = _akshare_index_symbol(code)
+        if symbol is None:
+            return None
+        df = ak.stock_zh_index_daily(symbol=symbol)
+        if df is None or df.empty:
+            return None
+        normalized = self._normalize(df, date_col="date")
+        if normalized is None or normalized.empty:
+            return None
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        window = normalized.loc[
+            (normalized.index >= start_ts) & (normalized.index <= end_ts)
+        ]
+        return window if not window.empty else None
 
     def _fetch_a_share(
         self, ak, code: str, start_date: str, end_date: str, interval: str,

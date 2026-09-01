@@ -956,6 +956,9 @@ class AgentLoop:
         # 5-9x each (2026-08-20 INTC run) because it could no longer see its
         # own verification records.
         self._called_identical: dict[tuple[str, str], str] = {}
+        # Repeatable tools (search_symbol, get_market_data) can loop forever on
+        # the same failing arguments. Block after two failures per signature.
+        self._failed_call_counts: dict[tuple[str, str], int] = {}
 
     def cancel(self) -> None:
         """Cancel the current loop.
@@ -1050,6 +1053,7 @@ class AgentLoop:
         self._last_activity_wall = _time.time()
         self._run_done = threading.Event()
         self._called_identical = {}
+        self._failed_call_counts = {}
         run_started_wall = _time.time()
 
         state_store = RunStateStore()
@@ -1961,6 +1965,33 @@ class AgentLoop:
                     )
                     continue
 
+            failure_key = self._identical_call_key(tc.name, tc.arguments)
+            if failure_key is not None and self._failed_call_counts.get(failure_key, 0) >= 2:
+                skip_msg = json.dumps(
+                    {
+                        "skipped": True,
+                        "reason": (
+                            f"{tc.name} with these arguments already failed twice "
+                            "this run. Do not retry the same call — switch tool/source "
+                            "or answer with available evidence."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+                execution_plan.append((tc, skip_msg))
+                trace.write(
+                    {
+                        "type": "tool_skipped",
+                        "iter": iteration,
+                        "tool": tc.name,
+                        "reason": "repeated_failure",
+                    }
+                )
+                react_trace.append(
+                    {"type": "tool_skipped", "tool": tc.name, "reason": "repeated_failure"}
+                )
+                continue
+
             execution_plan.append((tc, None))
 
         if not execution_plan:
@@ -2513,6 +2544,14 @@ class AgentLoop:
         self._last_activity_wall = _time.time()
 
         success = _is_tool_success(result)
+        failure_key = self._identical_call_key(tc.name, tc.arguments)
+        if failure_key is not None:
+            if success:
+                self._failed_call_counts.pop(failure_key, None)
+            else:
+                self._failed_call_counts[failure_key] = (
+                    self._failed_call_counts.get(failure_key, 0) + 1
+                )
         if success:
             self._called_ok.add(tc.name)
             if tc.name == "backtest":

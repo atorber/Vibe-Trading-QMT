@@ -1502,7 +1502,7 @@
     "metrics": {
       "total": "総資産",
       "change": "本日の資産変動",
-      "changeNote": "前日最終スナップショット比。相場変動と入出金を含みます",
+      "changeNote": "前営業日の最終スナップショット比。相場変動と入出金を含みます",
       "coverage": "評価カバレッジ",
       "coverageNote": "評価済み {{priced}} · 現金 {{cash}}",
       "lastComplete": "最後の完全更新",

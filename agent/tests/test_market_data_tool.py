@@ -463,3 +463,34 @@ def test_market_data_tool_accepts_minute_intervals():
             )
             assert json.loads(out) == {}
     assert [c["interval"] for c in calls] == ["1m", "5m", "15m", "30m", "30m", "1H", "1D"]
+
+
+def test_market_data_tool_rejects_yfinance_for_a_share_index() -> None:
+    from src.tools.market_data_tool import MarketDataTool
+
+    out = MarketDataTool().execute(
+        codes=["000300.SH"],
+        start_date="2026-08-20",
+        end_date="2026-08-21",
+        source="yfinance",
+    )
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "000300.SH" in payload["error"]
+
+
+def test_market_data_tool_lookback_days_derives_start_date() -> None:
+    import src.tools.market_data_tool as mod
+    from unittest import mock
+
+    calls = []
+    with mock.patch.object(mod, "fetch_market_data_json", side_effect=lambda **kw: calls.append(kw) or "{}"):
+        out = mod.MarketDataTool().execute(
+            codes=["000001.SH"],
+            end_date="2026-09-01",
+            lookback_days=5,
+            source="auto",
+        )
+    assert json.loads(out) == {}
+    assert calls[0]["end_date"] == "2026-09-01"
+    assert calls[0]["start_date"] == "2026-08-27"

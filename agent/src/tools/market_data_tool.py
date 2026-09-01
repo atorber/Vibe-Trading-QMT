@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from typing import Any
 
 from src.agent.tools import BaseTool
 from src.market_data import DEFAULT_MAX_ROWS, fetch_market_data_json
+from src.symbol_aliases import normalize_market_data_codes, validate_a_share_source
 from backtest.loaders.registry import VALID_SOURCES
 from backtest.runner import _VALID_INTERVALS
 
@@ -54,7 +56,11 @@ class MarketDataTool(BaseTool):
     description = (
         "Fetch normalized OHLCV market data through the repository loader layer. "
         "Use this for stock, ETF, index, or crypto price bars before writing raw "
-        "yfinance/OKX/Tushare scripts. Volume units are source- and market-dependent "
+        "yfinance/OKX/Tushare scripts. For China A-share **indices** use canonical "
+        "codes (000001.SH 上证指数, 399001.SZ 深证成指, 399006.SZ 创业板指, "
+        "000300.SH 沪深300) with source='auto' — never yfinance/yahoo. Prefer "
+        "as_of='today' and lookback_days for daily briefs instead of stale dates. "
+        "Volume units are source- and market-dependent "
         "(A-share sources report board lots of 100 shares, HK/US sources report single "
         "shares); read the per-symbol _provenance.volume_unit field ('lots' / 'shares' / "
         "null=undeclared) before interpreting or comparing volume values."
@@ -76,7 +82,25 @@ class MarketDataTool(BaseTool):
             },
             "end_date": {
                 "type": "string",
-                "description": "End date in YYYY-MM-DD format.",
+                "description": (
+                    "End date in YYYY-MM-DD format. Omit when using as_of='today'."
+                ),
+            },
+            "as_of": {
+                "type": "string",
+                "enum": ["today"],
+                "description": (
+                    "When 'today', set end_date to the current Beijing calendar day. "
+                    "Use for same-day A-share briefs instead of hard-coding dates."
+                ),
+            },
+            "lookback_days": {
+                "type": "integer",
+                "description": (
+                    "When set with end_date or as_of='today', derive start_date as "
+                    "end_date minus this many calendar days (minimum 1)."
+                ),
+                "minimum": 1,
             },
             "source": {
                 "type": "string",
@@ -134,7 +158,7 @@ class MarketDataTool(BaseTool):
                 "default": DEFAULT_MAX_ROWS,
             },
         },
-        "required": ["codes", "start_date", "end_date"],
+        "required": ["codes"],
     }
     repeatable = True
 
@@ -157,17 +181,41 @@ class MarketDataTool(BaseTool):
         if any(not isinstance(code, str) or not code.strip() for code in codes):
             return _error("every code must be a non-empty string")
         codes = [code.strip() for code in codes]
+        codes, _alias_map = normalize_market_data_codes(codes)
+
+        as_of = kwargs.get("as_of")
+        lookback_days = kwargs.get("lookback_days")
 
         start_date = kwargs.get("start_date")
         end_date = kwargs.get("end_date")
-        if not isinstance(start_date, str) or not start_date.strip():
-            return _error("start_date must be a non-empty YYYY-MM-DD string")
+
+        if as_of == "today":
+            end_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
         if not isinstance(end_date, str) or not end_date.strip():
-            return _error("end_date must be a non-empty YYYY-MM-DD string")
-        start_date = start_date.strip()
+            return _error(
+                "end_date must be a non-empty YYYY-MM-DD string (or set as_of='today')"
+            )
         end_date = end_date.strip()
-        if not _valid_iso_date(start_date) or not _valid_iso_date(end_date):
-            return _error("start_date and end_date must be valid YYYY-MM-DD dates")
+        if not _valid_iso_date(end_date):
+            return _error("end_date must be a valid YYYY-MM-DD date")
+
+        if lookback_days is not None:
+            if isinstance(lookback_days, bool) or not isinstance(lookback_days, int):
+                return _error("lookback_days must be a positive integer")
+            if lookback_days < 1:
+                return _error("lookback_days must be at least 1")
+            start_date = (
+                date.fromisoformat(end_date) - timedelta(days=lookback_days)
+            ).isoformat()
+        elif not isinstance(start_date, str) or not start_date.strip():
+            return _error(
+                "start_date must be a non-empty YYYY-MM-DD string when lookback_days is omitted"
+            )
+        else:
+            start_date = start_date.strip()
+
+        if not _valid_iso_date(start_date):
+            return _error("start_date must be a valid YYYY-MM-DD date")
         if start_date > end_date:
             return _error(
                 f"start_date ({start_date}) must not be after end_date ({end_date})"
@@ -176,6 +224,10 @@ class MarketDataTool(BaseTool):
         source = kwargs.get("source", "auto")
         if source not in _SOURCE_ENUM:
             return _error(f"source must be one of {_SOURCE_ENUM}")
+
+        source_err = validate_a_share_source(codes, source)
+        if source_err:
+            return _error(source_err)
 
         interval = kwargs.get("interval", "1D")
         if not isinstance(interval, str):

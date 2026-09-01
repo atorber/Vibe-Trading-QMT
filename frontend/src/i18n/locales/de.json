@@ -1501,7 +1501,7 @@
     "metrics": {
       "total": "Gesamtvermögen",
       "change": "Heutige Vermögensänderung",
-      "changeNote": "Ggü. letztem Snapshot von gestern; inkl. Markt und Cashflows",
+      "changeNote": "Ggü. letztem Snapshot des vorherigen Handelstags; inkl. Markt und Cashflows",
       "coverage": "Bewertungsabdeckung",
       "coverageNote": "Bewertet {{priced}} · Bargeld {{cash}}",
       "lastComplete": "Letzte vollständige Aktualisierung",

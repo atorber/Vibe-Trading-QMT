@@ -116,12 +116,24 @@ def _stub_a_share_response() -> pd.DataFrame:
     })
 
 
+def _stub_index_response() -> pd.DataFrame:
+    return pd.DataFrame({
+        "date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+        "open": [3000.0, 3010.0],
+        "high": [3020.0, 3030.0],
+        "low": [2990.0, 3000.0],
+        "close": [3010.0, 3020.0],
+        "volume": [100000.0, 110000.0],
+    })
+
+
 @pytest.fixture
 def fake_akshare(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Install a stub `akshare` module with mocked endpoints."""
     fake = SimpleNamespace(
         fund_etf_hist_sina=MagicMock(return_value=_stub_etf_response()),
         forex_hist_em=MagicMock(return_value=_stub_forex_response()),
+        stock_zh_index_daily=MagicMock(return_value=_stub_index_response()),
         stock_zh_a_hist=MagicMock(return_value=_stub_a_share_response()),
         stock_us_hist=MagicMock(return_value=pd.DataFrame()),
         stock_hk_hist=MagicMock(return_value=pd.DataFrame()),
@@ -174,3 +186,14 @@ class TestRouting:
         fake_akshare.stock_zh_a_hist.assert_called_once()
         fake_akshare.fund_etf_hist_sina.assert_not_called()
         fake_akshare.forex_hist_em.assert_not_called()
+
+    def test_a_share_index_routes_to_stock_zh_index_daily(
+        self, fake_akshare: SimpleNamespace
+    ) -> None:
+        loader = DataLoader()
+        df = loader._fetch_one("000300.SH", "2024-01-02", "2024-01-03", "1D")
+
+        fake_akshare.stock_zh_index_daily.assert_called_once_with(symbol="sh000300")
+        fake_akshare.stock_zh_a_hist.assert_not_called()
+        assert df is not None
+        assert len(df) == 2

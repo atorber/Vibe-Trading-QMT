@@ -175,15 +175,60 @@ function dateTime(value: string | undefined) {
   return value ? new Date(value).toLocaleString(uiLocale()) : "—";
 }
 
-function dayKey(value: string) {
-  const date = new Date(value);
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+function localDayKey(value: string | Date) {
+  const date = typeof value === "string" ? new Date(value) : value;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
-function prevDayKey(value: string) {
-  const date = new Date(value);
-  date.setDate(date.getDate() - 1);
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+function startOfLocalDay(value: string | Date) {
+  const date = typeof value === "string" ? new Date(value) : new Date(value.getTime());
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function isWeekend(date: Date) {
+  const weekday = date.getDay();
+  return weekday === 0 || weekday === 6;
+}
+
+/** Last complete snapshot on the previous trading day (skip weekends; walk back through holidays). */
+function previousTradingDayBaseline(
+  snapshotCreatedAt: string,
+  history: PortfolioHistoryPoint[],
+): PortfolioHistoryPoint | null {
+  if (!history.length) return null;
+
+  const rowsByDay = new Map<string, PortfolioHistoryPoint[]>();
+  for (const row of history) {
+    const key = localDayKey(row.created_at);
+    const bucket = rowsByDay.get(key);
+    if (bucket) bucket.push(row);
+    else rowsByDay.set(key, [row]);
+  }
+
+  const todayKey = localDayKey(snapshotCreatedAt);
+  let cursor = startOfLocalDay(snapshotCreatedAt);
+  cursor.setDate(cursor.getDate() - 1);
+
+  for (let steps = 0; steps < 14; steps += 1) {
+    while (isWeekend(cursor)) {
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    const key = localDayKey(cursor);
+    if (key === todayKey) {
+      cursor.setDate(cursor.getDate() - 1);
+      continue;
+    }
+    const rows = rowsByDay.get(key);
+    if (rows?.length) {
+      return rows[rows.length - 1];
+    }
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return null;
 }
 
 function netAssetsAmount(
@@ -415,21 +460,17 @@ export function Portfolio() {
   }, [snapshot, t, displayCurrency, fxRate]);
 
   const totalDailyChange = useMemo(() => {
-    if (!snapshot || !history.length) return null;
-    const yesterday = prevDayKey(snapshot.created_at);
-    const yesterdayRows = history.filter((row) => dayKey(row.created_at) === yesterday);
-    if (!yesterdayRows.length) return null;
-    const baseline = yesterdayRows[yesterdayRows.length - 1];
+    if (!snapshot) return null;
+    const baseline = previousTradingDayBaseline(snapshot.created_at, history);
+    if (!baseline) return null;
     const current = displayCurrency === "CNY" ? snapshot.totals.cny : snapshot.totals.usd;
     return current - historyTotals(baseline, displayCurrency);
   }, [snapshot, history, displayCurrency]);
 
   const netDailyChange = useMemo(() => {
-    if (!snapshot || !history.length) return null;
-    const yesterday = prevDayKey(snapshot.created_at);
-    const yesterdayRows = history.filter((row) => dayKey(row.created_at) === yesterday);
-    if (!yesterdayRows.length) return null;
-    const baseline = yesterdayRows[yesterdayRows.length - 1];
+    if (!snapshot) return null;
+    const baseline = previousTradingDayBaseline(snapshot.created_at, history);
+    if (!baseline) return null;
     const current = netAssetsAmount(snapshot.net_assets, snapshot.totals, displayCurrency);
     return current - historyNetAssets(baseline, displayCurrency);
   }, [snapshot, history, displayCurrency]);

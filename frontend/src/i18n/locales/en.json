@@ -1642,18 +1642,18 @@
       "netAssets": "Net assets",
       "portfolioTotalNote": "Portfolio value {{value}}",
       "change": "Today's asset change",
-      "changeNote": "Total-asset change vs yesterday's last complete snapshot",
+      "changeNote": "Total-asset change vs the previous trading day's last complete snapshot",
       "netChange": "Today's net-asset change",
-      "netChangeNote": "Net-asset change vs yesterday's last complete snapshot",
+      "netChangeNote": "Net-asset change vs the previous trading day's last complete snapshot",
       "coverage": "Valuation coverage",
       "coverageNote": "Priced {{priced}} · cash {{cash}}",
       "lastComplete": "Last complete update",
       "excluded": "{{count}} accounts could not be read and are excluded from this total",
       "tips": {
         "total": "Sum of broker-reported gross total assets (e.g. QMT credit m_dBalance, Futu total_assets + debt_cash) across enabled accounts, before financing liabilities; failed reads are excluded.",
-        "change": "Current total assets minus yesterday's last complete snapshot. Includes market moves, trading, and cash flows. Shows — when no yesterday baseline exists.",
+        "change": "Current total assets minus the previous trading day's last complete snapshot. Includes market moves, trading, and cash flows. Shows — when no previous-trading-day baseline exists.",
         "netAssets": "Sum of broker-reported net assets (e.g. QMT m_dAssureAsset, Futu total_assets): gross assets minus margin/financing debt. Equals total assets when there is no leverage.",
-        "netChange": "Current net assets minus yesterday's last complete snapshot. Shows — when no yesterday baseline exists.",
+        "netChange": "Current net assets minus the previous trading day's last complete snapshot. Shows — when no previous-trading-day baseline exists.",
         "coverage": "(Priced holdings + identified cash) ÷ total assets. Shows how much is broken out as holdings or cash; the rest is unpriced/other."
       }
     },

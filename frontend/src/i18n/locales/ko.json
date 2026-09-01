@@ -1502,7 +1502,7 @@
     "metrics": {
       "total": "총자산",
       "change": "오늘의 자산 변동",
-      "changeNote": "전일 마지막 스냅샷 대비. 시세 변동과 입출금 포함",
+      "changeNote": "직전 거래일 마지막 스냅샷 대비. 시세 변동과 입출금 포함",
       "coverage": "평가 커버리지",
       "coverageNote": "평가 완료 {{priced}} · 현금 {{cash}}",
       "lastComplete": "마지막 완전 업데이트",
