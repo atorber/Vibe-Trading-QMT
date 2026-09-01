@@ -61,7 +61,12 @@ Only add more tool calls when a specific gap remains after these four steps.
 Eastmoney. After one failure or empty envelope:
 
 - Do **not** repeat the same tool with the same arguments.
-- Move to the next SOP step or state that dimension is unavailable.
+- `get_sector_info` ranking and `screen_market` (A-share) auto-fallback to akshare
+  when push2 fails; accept `source="akshare"` in the envelope.
+- `get_northbound_flow` auto-fallback to tushare when Eastmoney is empty or
+  errors; requires `TUSHARE_TOKEN`.
+- Move to the next SOP step or state that dimension is unavailable when all
+  providers in the chain fail.
 
 ## Date discipline
 

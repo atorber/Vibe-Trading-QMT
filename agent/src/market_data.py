@@ -54,6 +54,11 @@ _SOURCE_PATTERNS = [
 
 def detect_source(code: str) -> str:
     """Infer the best loader source for a normalized symbol."""
+    from src.symbol_aliases import is_a_share_index
+
+    # QMT Bridge often 404s on index symbols; Tencent serves them reliably.
+    if is_a_share_index(code):
+        return "tencent"
     for pattern, source in _SOURCE_PATTERNS:
         if pattern.match(code):
             return source

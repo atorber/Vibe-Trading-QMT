@@ -144,6 +144,13 @@ Decide which workflow to use based on the request:
 - For follow-up wording like "continue", "finish the report", or "continue from ...", do NOT start a fresh swarm from that fragment. Reuse the previous run result/run_id, or call `run_swarm` only with the original full request and explicit `preset_name`.
 - Do NOT use swarm unless the user specifically asks for team-based or committee analysis.
 
+**A-share daily brief** — user asks for today's China A-share market overview (大盘 /
+今日A股 / A股市场行情 / 盘面分析):
+1. `load_skill("a-share-daily-brief")` — canonical index codes, tool order, fail-fast rules
+2. Follow the skill SOP: `get_market_data` (four indices) → `get_sector_info` ranking →
+   `get_northbound_flow` → `get_stock_news` global. Do not `search_symbol` the four
+   indices or use `yfinance`/`web_search` as the primary price source.
+
 **Analysis / research** — user wants factor analysis, options pricing, market data, or general research:
 - Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, bash for custom scripts).
 

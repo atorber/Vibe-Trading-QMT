@@ -188,10 +188,39 @@ class TestErrorEnvelope:
     def test_http_failure_ranking_error_envelope(self):
         with patch(
             "src.tools.sector_tool.get_json", side_effect=RuntimeError("HTTP 503")
+        ), patch(
+            "src.tools.sector_tool.akshare_fallbacks.fetch_industry_board_ranking",
+            side_effect=RuntimeError("akshare down"),
         ):
             payload = json.loads(SectorInfoTool().execute(mode="ranking"))
         assert payload["ok"] is False
         assert "503" in payload["error"]
+        assert "akshare" in payload["error"]
+
+    def test_http_failure_ranking_uses_akshare_fallback(self):
+        fallback_boards = [
+            {
+                "board_code": "BK0477",
+                "board_name": "白酒",
+                "change_pct": 3.4,
+                "index": 12345.0,
+                "up_count": 18.0,
+                "down_count": 2.0,
+                "leader": "贵州茅台",
+            }
+        ]
+        with patch(
+            "src.tools.sector_tool.get_json", side_effect=RuntimeError("HTTP 503")
+        ), patch(
+            "src.tools.sector_tool.akshare_fallbacks.fetch_industry_board_ranking",
+            return_value=fallback_boards,
+        ):
+            payload = json.loads(SectorInfoTool().execute(mode="ranking", limit=5))
+
+        assert payload["ok"] is True
+        assert payload["source"] == "akshare"
+        assert payload["data"]["boards"] == fallback_boards
+        assert "akshare fallback" in payload["warnings"][-1]
 
 
 _INDUSTRY_META_PAYLOAD = {

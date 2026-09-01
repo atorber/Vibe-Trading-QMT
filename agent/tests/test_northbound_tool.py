@@ -121,11 +121,50 @@ class TestErrorEnvelope:
         assert payload["data"]["history"][0]["trade_date"] == "2024-01-03"
         assert "used tushare fallback" in payload["warnings"][0]
 
-    def test_missing_data_block_yields_empty_history_and_null_realtime(self):
-        with patch.object(nb, "get_json", return_value={"data": None}):
+    def test_empty_eastmoney_payload_uses_tushare_fallback_when_available(self):
+        fallback = {
+            "unit": "10k CNY",
+            "lookback_days": 5,
+            "realtime": {"total": 50.0},
+            "history": [{"trade_date": "2024-01-03", "total": 50.0}],
+        }
+        with patch.object(
+            nb,
+            "get_json",
+            side_effect=[
+                {"data": {"hk2sh": {}, "hk2sz": {}}},
+                {"data": {"klines": []}},
+            ],
+        ), patch.object(
+            nb.tushare_fallbacks,
+            "fetch_northbound_flow",
+            return_value=fallback,
+        ) as fallback_fetch:
+            text = nb.NorthboundFlowTool().execute(lookback_days=5)
+
+        fallback_fetch.assert_called_once_with(lookback_days=5)
+        payload = json.loads(text)
+        assert payload["ok"] is True
+        assert payload["source"] == "tushare"
+        assert "empty data" in payload["warnings"][0]
+
+    def test_empty_eastmoney_payload_without_fallback_stays_empty(self):
+        with patch.object(
+            nb,
+            "get_json",
+            side_effect=[
+                {"data": {"hk2sh": {}, "hk2sz": {}}},
+                {"data": {"klines": []}},
+            ],
+        ), patch.object(
+            nb.tushare_fallbacks,
+            "fetch_northbound_flow",
+            side_effect=RuntimeError("no token"),
+        ):
             text = nb.NorthboundFlowTool().execute(lookback_days=5)
         payload = json.loads(text)
         assert payload["ok"] is True
+        assert payload["source"] == "eastmoney"
         assert payload["data"]["history"] == []
         assert payload["data"]["realtime"]["total"] is None
 

@@ -26,6 +26,7 @@ from typing import Any
 from backtest.engines._market_hooks import _detect_market
 from backtest.loaders.eastmoney_client import get_json, resolve_secid
 from src.agent.tools import BaseTool
+from src.tools import akshare_fallbacks
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +423,10 @@ def _fetch_ranking(limit: int) -> str:
         A JSON envelope string with the ranked boards, or an error envelope when
         the request fails.
     """
+    boards: list[dict[str, Any]] = []
+    source = "eastmoney"
+    warnings: list[str] = []
+
     try:
         payload = get_json(
             _RANKING_URL,
@@ -435,24 +440,39 @@ def _fetch_ranking(limit: int) -> str:
                 "fltt": "2",
             },
         )
-    except Exception as exc:  # noqa: BLE001 - surface a clean error envelope
+        boards = [
+            parsed
+            for parsed in (_parse_ranking_row(r) for r in _diff_rows(payload))
+            if parsed is not None
+        ]
+        if len(boards) > limit:
+            boards = boards[:limit]
+    except Exception as exc:  # noqa: BLE001 - try akshare before surfacing error
         logger.warning("sector ranking fetch failed: %s", exc)
-        return _error(f"ranking request failed: {exc}")
+        warnings.append(f"eastmoney ranking failed ({exc})")
 
-    boards = [
-        parsed
-        for parsed in (_parse_ranking_row(r) for r in _diff_rows(payload))
-        if parsed is not None
-    ]
-    if len(boards) > limit:
-        boards = boards[:limit]
-    envelope = {
+    if not boards:
+        try:
+            boards = akshare_fallbacks.fetch_industry_board_ranking(limit)
+            source = "akshare"
+            if warnings:
+                warnings.append("used akshare fallback")
+            else:
+                warnings.append("eastmoney returned no boards; used akshare fallback")
+        except Exception as exc:  # noqa: BLE001 - surface a clean error envelope
+            if warnings:
+                return _error(f"{warnings[0]}; akshare fallback failed: {exc}")
+            return _error(f"ranking request failed: {exc}")
+
+    envelope: dict[str, Any] = {
         "ok": True,
         "market": "stock",
-        "source": "eastmoney",
+        "source": source,
         "mode": "ranking",
         "data": {"boards": boards},
     }
+    if warnings:
+        envelope["warnings"] = warnings
     return json.dumps(envelope, ensure_ascii=False)
 
 
@@ -466,8 +486,10 @@ class SectorInfoTool(BaseTool):
         "(e.g. 600519.SH / 000001.SZ / .BJ), list the industry and concept "
         "boards it belongs to; (2) ranking — set mode='ranking' to rank "
         "industry boards by today's percent change (with up/down constituent "
-        "counts and the leading stock). Use this to map a stock to its sectors "
-        "or to see which sectors are hot today. Market: A-share stocks. "
+        "counts and the leading stock). Ranking mode falls back to akshare when "
+        "Eastmoney push2 is throttled; call once per run and do not retry on "
+        "failure. Use this to map a stock to its sectors or to see which sectors "
+        "are hot today. Market: A-share stocks. "
         'Example: {"code": "600519.SH"} or {"mode": "ranking", "limit": 20}.'
     )
     parameters = {

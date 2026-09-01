@@ -68,6 +68,19 @@ def test_detect_source(code: str, expected: str) -> None:
     assert detect_source(code) == expected
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "000001.SH",
+        "000300.SH",
+        "399001.SZ",
+        "399006.SZ",
+    ],
+)
+def test_detect_source_a_share_indices_prefer_tencent(code: str) -> None:
+    assert detect_source(code) == "tencent"
+
+
 def test_yahoo_loader_accepts_futures_and_forex_suffixes() -> None:
     """The yahoo direct loader must accept =F/=X, not just equity suffixes (#718)."""
     from backtest.loaders.yahoo_loader import _is_supported

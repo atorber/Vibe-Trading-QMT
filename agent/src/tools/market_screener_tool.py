@@ -23,6 +23,7 @@ from typing import Any
 
 from backtest.loaders.eastmoney_client import get_json
 from src.agent.tools import BaseTool
+from src.tools import akshare_fallbacks
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,9 @@ class MarketScreenerTool(BaseTool):
         "ranked by a chosen metric: percent change, traded volume, turnover "
         "value (amount) or turnover rate. Use this to find today's biggest "
         "movers or most-actively-traded names without fetching every symbol. "
-        "Markets: A-share ('a'), US ('us'), Hong Kong ('hk'). "
+        "A-share ('a') falls back to akshare when Eastmoney push2 is throttled; "
+        "call once per run and do not retry on failure. Markets: A-share ('a'), "
+        "US ('us'), Hong Kong ('hk'). "
         'Example: {"market": "a", "sort_by": "change_pct", "top_n": 20}.'
     )
     parameters = {
@@ -237,20 +240,42 @@ class MarketScreenerTool(BaseTool):
             return _error("top_n must be a positive integer")
         top_n = min(top_n, _MAX_TOP_N)
 
+        source = "eastmoney"
+        warnings: list[str] = []
+        rows: list[dict[str, Any]] = []
         try:
             rows = _screen_market(market, sort_by=sort_by, top_n=top_n)
-        except Exception as exc:  # noqa: BLE001 - surface as the error envelope
+        except Exception as exc:  # noqa: BLE001 - A-share may recover via akshare
             logger.warning("market screen failed for %s/%s: %s", market, sort_by, exc)
-            return _error(str(exc))
+            if market != "a":
+                return _error(str(exc))
+            warnings.append(f"eastmoney screen failed ({exc})")
 
-        envelope = {
+        if market == "a" and not rows:
+            try:
+                rows = akshare_fallbacks.screen_a_share_market(
+                    sort_by=sort_by, top_n=top_n
+                )
+                source = "akshare"
+                if warnings:
+                    warnings.append("used akshare fallback")
+                else:
+                    warnings.append("eastmoney returned no rows; used akshare fallback")
+            except Exception as exc:  # noqa: BLE001 - surface as the error envelope
+                if warnings:
+                    return _error(f"{warnings[0]}; akshare fallback failed: {exc}")
+                return _error(str(exc))
+
+        envelope: dict[str, Any] = {
             "ok": True,
             "market": market,
-            "source": "eastmoney",
+            "source": source,
             "data": {
                 "market": market,
                 "sort_by": sort_by,
                 "rows": rows,
             },
         }
+        if warnings:
+            envelope["warnings"] = warnings
         return json.dumps(envelope, ensure_ascii=False)

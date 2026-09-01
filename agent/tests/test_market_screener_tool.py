@@ -108,18 +108,41 @@ class TestSuccessEnvelope:
 
         assert len(json.loads(text)["data"]["rows"]) == 1
 
-    def test_rowless_payload_yields_empty_data(self):
+    def test_rowless_payload_yields_empty_data_for_non_a_share(self):
         with patch(
             "src.tools.market_screener_tool.get_json", return_value={"data": None}
+        ):
+            text = MarketScreenerTool().execute(market="us")
+
+        payload = json.loads(text)
+        assert payload["ok"] is True
+        assert payload["data"]["rows"] == []
+
+    def test_rowless_payload_uses_akshare_fallback_for_a_share(self):
+        fallback_rows = [
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "price": 1688.0,
+                "change_pct": 9.98,
+                "change": 153.0,
+                "volume": 1234567.0,
+                "amount": 2.08e9,
+                "turnover_rate": 1.23,
+            }
+        ]
+        with patch(
+            "src.tools.market_screener_tool.get_json", return_value={"data": None}
+        ), patch(
+            "src.tools.market_screener_tool.akshare_fallbacks.screen_a_share_market",
+            return_value=fallback_rows,
         ):
             text = MarketScreenerTool().execute(market="a")
 
         payload = json.loads(text)
         assert payload["ok"] is True
-        # Rowless payload still yields the nested data:{...} envelope, not a
-        # bare list, with an empty "rows".
-        assert payload["data"]["rows"] == []
-        assert payload["data"]["sort_by"] == "change_pct"
+        assert payload["source"] == "akshare"
+        assert payload["data"]["rows"] == fallback_rows
 
 
 class TestErrorEnvelope:
@@ -156,9 +179,42 @@ class TestErrorEnvelope:
         with patch(
             "src.tools.market_screener_tool.get_json",
             side_effect=RuntimeError("HTTP 429"),
+        ), patch(
+            "src.tools.market_screener_tool.akshare_fallbacks.screen_a_share_market",
+            side_effect=RuntimeError("akshare down"),
         ):
             text = MarketScreenerTool().execute(market="a")
 
         payload = json.loads(text)
         assert payload["ok"] is False
         assert "429" in payload["error"]
+        assert "akshare" in payload["error"]
+
+    def test_http_failure_uses_akshare_fallback_for_a_share(self):
+        fallback_rows = [
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "price": 1688.0,
+                "change_pct": 9.98,
+                "change": 153.0,
+                "volume": 1234567.0,
+                "amount": 2.08e9,
+                "turnover_rate": 1.23,
+            }
+        ]
+        with patch(
+            "src.tools.market_screener_tool.get_json",
+            side_effect=RuntimeError("HTTP 429"),
+        ), patch(
+            "src.tools.market_screener_tool.akshare_fallbacks.screen_a_share_market",
+            return_value=fallback_rows,
+        ) as fallback_screen:
+            text = MarketScreenerTool().execute(market="a", sort_by="amount", top_n=5)
+
+        fallback_screen.assert_called_once_with(sort_by="amount", top_n=5)
+        payload = json.loads(text)
+        assert payload["ok"] is True
+        assert payload["source"] == "akshare"
+        assert payload["data"]["rows"] == fallback_rows
+        assert "akshare fallback" in payload["warnings"][-1]

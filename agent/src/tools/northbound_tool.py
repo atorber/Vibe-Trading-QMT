@@ -153,6 +153,47 @@ def _parse_history(payload: Any, lookback_days: int) -> list[dict[str, Any]]:
     return rows[-lookback_days:]
 
 
+def _northbound_data_empty(
+    realtime: dict[str, float | None], history: list[dict[str, Any]]
+) -> bool:
+    """Return True when Eastmoney succeeded but carried no usable flow data."""
+    if history:
+        return False
+    if realtime.get("total") is not None:
+        return False
+    if realtime.get("shanghai_connect") is not None:
+        return False
+    if realtime.get("shenzhen_connect") is not None:
+        return False
+    return True
+
+
+def _tushare_fallback_response(
+    lookback_days: int, *, eastmoney_reason: str
+) -> str | None:
+    """Try Tushare fallback; return JSON envelope or ``None`` on failure."""
+    try:
+        fallback_data = tushare_fallbacks.fetch_northbound_flow(
+            lookback_days=lookback_days
+        )
+    except Exception as fallback_exc:  # noqa: BLE001 - caller surfaces both failures
+        logger.warning("northbound tushare fallback failed: %s", fallback_exc)
+        return None
+    return json.dumps(
+        {
+            "ok": True,
+            "market": "China A",
+            "source": "tushare",
+            "warnings": [
+                f"eastmoney {eastmoney_reason}; "
+                "used tushare fallback with latest daily data"
+            ],
+            "data": fallback_data,
+        },
+        ensure_ascii=False,
+    )
+
+
 def _clamp_lookback(value: Any) -> int:
     """Clamp a requested lookback to ``[1, _MAX_LOOKBACK_DAYS]``.
 
@@ -231,34 +272,28 @@ class NorthboundFlowTool(BaseTool):
             )
         except Exception as exc:  # noqa: BLE001 - surface as error envelope
             logger.warning("northbound flow fetch failed: %s", exc)
-            try:
-                fallback_data = tushare_fallbacks.fetch_northbound_flow(
-                    lookback_days=lookback_days
-                )
-            except Exception as fallback_exc:  # noqa: BLE001 - return both provider failures
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "error": f"{exc}; tushare fallback failed: {fallback_exc}",
-                    },
-                    ensure_ascii=False,
-                )
+            fallback_text = _tushare_fallback_response(
+                lookback_days, eastmoney_reason=f"failed ({exc})"
+            )
+            if fallback_text is not None:
+                return fallback_text
             return json.dumps(
                 {
-                    "ok": True,
-                    "market": "China A",
-                    "source": "tushare",
-                    "warnings": [
-                        "eastmoney failed "
-                        f"({exc}); used tushare fallback with latest daily data"
-                    ],
-                    "data": fallback_data,
+                    "ok": False,
+                    "error": f"{exc}; tushare fallback unavailable",
                 },
                 ensure_ascii=False,
             )
 
         realtime = _parse_realtime(realtime_payload)
         history = _parse_history(history_payload, lookback_days)
+
+        if _northbound_data_empty(realtime, history):
+            fallback_text = _tushare_fallback_response(
+                lookback_days, eastmoney_reason="returned empty data"
+            )
+            if fallback_text is not None:
+                return fallback_text
 
         envelope = {
             "ok": True,
