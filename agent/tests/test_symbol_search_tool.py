@@ -389,6 +389,13 @@ class TestSymbolSearchErrors:
         assert payload["data"]["candidates"][0]["symbol"] == "000300.SH"
         assert payload["data"]["resolved_alias"] is True
 
+    def test_builtin_canonical_symbol_short_circuits(self):
+        out = ss.SymbolSearchTool().execute(query="300285.SZ")
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["data"]["candidates"][0]["symbol"] == "300285.SZ"
+        assert payload["data"]["sources"]["builtin_canonical_symbol"] == "ok"
+
     def test_missing_query_returns_error_envelope(self):
         out = ss.SymbolSearchTool().execute(query="   ")
         payload = json.loads(out)

@@ -31,7 +31,11 @@ from typing import Any, Dict, List, Optional
 
 from backtest.loaders import eastmoney_client, sec_edgar_client, yahoo_client
 from src.agent.tools import BaseTool
-from src.symbol_aliases import index_search_candidate, resolve_a_share_index_alias
+from src.symbol_aliases import (
+    index_search_candidate,
+    resolve_a_share_index_alias,
+    resolve_canonical_symbol_query,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +132,9 @@ class SymbolSearchTool(BaseTool):
         "Yahoo). Exact crypto pairs are checked against the active Binance "
         "profile; other queries search Eastmoney (China/HK/US names and tickers) and Yahoo "
         "(global) and, for U.S. equities, attaches the SEC CIK. **Do not use this for "
-        "canonical A-share indices** (上证指数→000001.SH, 沪深300→000300.SH, etc.) — "
-        "call get_market_data directly with those codes. Example: "
+        "canonical A-share indices** (上证指数→000001.SH, 沪深300→000300.SH, etc.) or "
+        "already-qualified symbols (600519.SH, 300285.SZ, AAPL.US) — call get_market_data "
+        "directly with those codes. Example: "
         'search_symbol(query="apple", limit=5).'
     )
     parameters = {
@@ -191,6 +196,34 @@ class SymbolSearchTool(BaseTool):
                         "count": 1,
                         "candidates": [candidate],
                         "sources": {"builtin_index_alias": "ok"},
+                        "resolved_alias": True,
+                    },
+                },
+                ensure_ascii=False,
+            )
+
+        resolved_symbol = resolve_canonical_symbol_query(query)
+        if resolved_symbol is not None:
+            code, name = resolved_symbol
+            suffix = code.rsplit(".", 1)[-1]
+            market = _MARKET_BY_SUFFIX.get(suffix, "multi")
+            candidate = {
+                "symbol": code,
+                "name": name,
+                "market": market,
+                "venue": suffix,
+                "source": "builtin_canonical_symbol",
+            }
+            return json.dumps(
+                {
+                    "ok": True,
+                    "market": market,
+                    "source": "symbol_search",
+                    "data": {
+                        "query": query,
+                        "count": 1,
+                        "candidates": [candidate],
+                        "sources": {"builtin_canonical_symbol": "ok"},
                         "resolved_alias": True,
                     },
                 },

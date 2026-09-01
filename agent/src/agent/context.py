@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from src.agent.memory import WorkspaceMemory
 from src.agent.skills import SkillsLoader
 from src.agent.tools import ToolRegistry
+from src.symbol_aliases import (
+    matches_a_share_brief_intent,
+    matches_broker_trade_review_intent,
+)
 
 if TYPE_CHECKING:
     from src.memory.persistent import PersistentMemory
@@ -145,11 +149,21 @@ Decide which workflow to use based on the request:
 - Do NOT use swarm unless the user specifically asks for team-based or committee analysis.
 
 **A-share daily brief** — user asks for today's China A-share market overview (大盘 /
-今日A股 / A股市场行情 / 盘面分析):
+今日A股 / A股市场行情 / 盘面分析) and **not** a broker trade review:
 1. `load_skill("a-share-daily-brief")` — canonical index codes, tool order, fail-fast rules
 2. Follow the skill SOP: `get_market_data` (four indices) → `get_sector_info` ranking →
    `get_northbound_flow` → `get_stock_news` global. Do not `search_symbol` the four
    indices or use `yfinance`/`web_search` as the primary price source.
+
+**Broker trade review** — user asks for today's live-broker trade review (今日交易复盘 /
+今日成交 / 账户复盘) from QMT / Futu / IBKR read-only connectors:
+1. `load_skill("broker-trade-review")` — broker tool order, no wasteful market-brief fetches
+2. Primary evidence: `trading_connections` → `trading_select_connection` → `trading_account`
+   → `trading_positions` → `trading_history_deals` → `trading_orders`. Never `search_symbol`
+   for symbols already returned by `trading_positions`.
+3. Do **not** run the a-share-daily-brief four-index / sector / northbound / news SOP unless
+   the user explicitly asked for 大盘/板块/北向/新闻. If you do call optional context tools,
+   include a **数据获取状态** table in the final report (success + failure + impact).
 
 **Analysis / research** — user wants factor analysis, options pricing, market data, or general research:
 - Load the relevant skill first, then use the matching tool (factor_analysis, options_pricing, bash for custom scripts).
@@ -352,10 +366,31 @@ class ContextBuilder:
                     recall_block = "\n".join(lines)
                     enriched = (
                         f"<recalled-memories>\n{recall_block}\n</recalled-memories>\n\n"
-                        f"{user_message}"
+                        f"{enriched}"
                     )
             except Exception as exc:
                 logger.debug("Auto-recall failed: %s", exc)
+
+        if matches_broker_trade_review_intent(user_message):
+            try:
+                sop = self.skills_loader.get_content("broker-trade-review")
+            except Exception:  # noqa: BLE001 - prompt assembly must never break startup
+                sop = ""
+            if sop.strip():
+                enriched = (
+                    f"<task-sop skill=\"broker-trade-review\">\n{sop.strip()}\n"
+                    f"</task-sop>\n\n{enriched}"
+                )
+        elif matches_a_share_brief_intent(user_message):
+            try:
+                sop = self.skills_loader.get_content("a-share-daily-brief")
+            except Exception:  # noqa: BLE001 - prompt assembly must never break startup
+                sop = ""
+            if sop.strip():
+                enriched = (
+                    f"<task-sop skill=\"a-share-daily-brief\">\n{sop.strip()}\n"
+                    f"</task-sop>\n\n{enriched}"
+                )
 
         messages.append({"role": "user", "content": enriched})
         return messages

@@ -17,6 +17,29 @@ A_SHARE_INDEX_CODES: dict[str, str] = {
 }
 
 _A_SHARE_SYMBOL_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$", re.IGNORECASE)
+_HK_SYMBOL_RE = re.compile(r"^\d{3,5}\.HK$", re.IGNORECASE)
+_US_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9&.\-]*\.US$", re.IGNORECASE)
+
+_A_SHARE_BRIEF_INTENT_PATTERNS = (
+    re.compile(r"今日.*A股", re.IGNORECASE),
+    re.compile(r"A股.*今日", re.IGNORECASE),
+    re.compile(r"分析.*A股市场", re.IGNORECASE),
+    re.compile(r"A股市场行情", re.IGNORECASE),
+    re.compile(r"大盘行情", re.IGNORECASE),
+    re.compile(r"盘面分析", re.IGNORECASE),
+    re.compile(r"两市行情", re.IGNORECASE),
+)
+
+_BROKER_TRADE_REVIEW_PATTERNS = (
+    re.compile(r"交易复盘", re.IGNORECASE),
+    re.compile(r"今日交易", re.IGNORECASE),
+    re.compile(r"今日成交", re.IGNORECASE),
+    re.compile(r"账户复盘", re.IGNORECASE),
+    re.compile(r"交割复盘", re.IGNORECASE),
+    re.compile(r"持仓复盘", re.IGNORECASE),
+    re.compile(r"broker.*review", re.IGNORECASE),
+    re.compile(r"trade\s+review", re.IGNORECASE),
+)
 
 
 def _norm_alias(value: str) -> str:
@@ -76,6 +99,44 @@ _A_SHARE_INCOMPATIBLE_SOURCES = frozenset({"yfinance", "yahoo"})
 def is_a_share_symbol(code: str) -> bool:
     """Return True for ``NNNNNN.SH/SZ/BJ`` symbols."""
     return bool(_A_SHARE_SYMBOL_RE.match(code.strip()))
+
+
+def is_canonical_symbol_query(query: str) -> bool:
+    """Return True when ``query`` is already a fully qualified symbol."""
+    text = query.strip().upper()
+    if not text:
+        return False
+    if is_a_share_symbol(text):
+        return True
+    if _HK_SYMBOL_RE.match(text):
+        return True
+    return bool(_US_SYMBOL_RE.match(text))
+
+
+def resolve_canonical_symbol_query(query: str) -> tuple[str, str] | None:
+    """Resolve an already-qualified symbol query to ``(code, display_name)``."""
+    text = query.strip().upper()
+    if not is_canonical_symbol_query(text):
+        return None
+    return text, text
+
+
+def matches_broker_trade_review_intent(text: str) -> bool:
+    """Return True for live-broker trade review / 今日交易复盘 style requests."""
+    message = text.strip()
+    if not message:
+        return False
+    return any(pattern.search(message) for pattern in _BROKER_TRADE_REVIEW_PATTERNS)
+
+
+def matches_a_share_brief_intent(text: str) -> bool:
+    """Return True when the user message looks like a same-day A-share brief."""
+    if matches_broker_trade_review_intent(text):
+        return False
+    message = text.strip()
+    if not message:
+        return False
+    return any(pattern.search(message) for pattern in _A_SHARE_BRIEF_INTENT_PATTERNS)
 
 
 def is_a_share_index(code: str) -> bool:

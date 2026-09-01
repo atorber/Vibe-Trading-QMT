@@ -25,7 +25,7 @@ import threading
 import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from src.agent.context import ContextBuilder
 from src.agent.grounding import GroundingLedger
@@ -48,6 +48,12 @@ from src.providers.content_filter import (
 )
 from src.config.accessor import get_env_config
 from src.config.paths import get_runs_dir, get_sessions_dir
+from src.symbol_aliases import (
+    A_SHARE_BRIEF_INDEX_CODES,
+    matches_a_share_brief_intent,
+    matches_broker_trade_review_intent,
+    normalize_market_data_codes,
+)
 from src.tools.background_tools import get_background_manager
 from src.config.limits import truncate_tool_result
 from src.tools.path_utils import safe_run_dir
@@ -684,6 +690,49 @@ def _is_tool_success(result: str) -> bool:
     return True
 
 
+def _market_data_coverage_key(arguments: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """Build a source-agnostic cache key for ``get_market_data`` calls."""
+    codes = arguments.get("codes")
+    if not isinstance(codes, list) or not codes:
+        return None
+    normalized, _alias_map = normalize_market_data_codes(
+        [str(code).strip() for code in codes if str(code).strip()]
+    )
+    if not normalized:
+        return None
+    interval = str(arguments.get("interval") or "1D").strip().upper()
+    return (
+        tuple(sorted(normalized)),
+        str(arguments.get("start_date") or "").strip(),
+        str(arguments.get("end_date") or "").strip(),
+        str(arguments.get("as_of") or "").strip(),
+        arguments.get("lookback_days"),
+        interval,
+        arguments.get("max_rows"),
+    )
+
+
+def _market_data_has_bars(result: str) -> bool:
+    """Return True when a market-data envelope carries at least one bar row."""
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return False
+    for value in data.values():
+        if isinstance(value, list) and value:
+            return True
+        if isinstance(value, dict):
+            bars = value.get("bars") or value.get("rows")
+            if isinstance(bars, list) and bars:
+                return True
+    return False
+
+
 # Provider tool-call markup that a model can emit as plain text on the
 # forced-text final iteration, where tool definitions are withheld. Releasing
 # it verbatim hands the user mojibake instead of an answer. Both DSML bar
@@ -959,6 +1008,10 @@ class AgentLoop:
         # Repeatable tools (search_symbol, get_market_data) can loop forever on
         # the same failing arguments. Block after two failures per signature.
         self._failed_call_counts: dict[tuple[str, str], int] = {}
+        self._a_share_brief_mode = False
+        self._broker_trade_review_mode = False
+        self._market_data_cache: dict[tuple[Any, ...], str] = {}
+        self._brief_sop_done: set[str] = set()
 
     def cancel(self) -> None:
         """Cancel the current loop.
@@ -1054,6 +1107,13 @@ class AgentLoop:
         self._run_done = threading.Event()
         self._called_identical = {}
         self._failed_call_counts = {}
+        self._a_share_brief_mode = (
+            matches_a_share_brief_intent(user_message)
+            and not matches_broker_trade_review_intent(user_message)
+        )
+        self._broker_trade_review_mode = matches_broker_trade_review_intent(user_message)
+        self._market_data_cache = {}
+        self._brief_sop_done = set()
         run_started_wall = _time.time()
 
         state_store = RunStateStore()
@@ -1934,6 +1994,45 @@ class AgentLoop:
                     )
                     continue
 
+            brief_skip = self._brief_sop_skip_message(tc.name, tc.arguments)
+            if brief_skip is not None:
+                execution_plan.append((tc, brief_skip))
+                continue
+
+            if tc.name == "get_market_data":
+                coverage_key = _market_data_coverage_key(tc.arguments)
+                if coverage_key is not None and coverage_key in self._market_data_cache:
+                    cached = self._market_data_cache[coverage_key]
+                    messages.append(context.format_tool_result(tc.id, tc.name, cached))
+                    trace.write(
+                        {
+                            "type": "tool_result_cached",
+                            "iter": iteration,
+                            "tool": tc.name,
+                            "call_id": tc.id,
+                            "reason": "market_data_coverage",
+                        }
+                    )
+                    react_trace.append(
+                        {
+                            "type": "tool_result_cached",
+                            "tool": tc.name,
+                            "reason": "market_data_coverage",
+                        }
+                    )
+                    self._emit(
+                        "tool_result",
+                        {
+                            "tool": tc.name,
+                            "status": "ok",
+                            "elapsed_ms": 0,
+                            "preview": cached[:200],
+                            "call_id": tc.id,
+                            "cached": True,
+                        },
+                    )
+                    continue
+
             # Deterministic tools (e.g. financial_rigor calc) return the same
             # result for the same args. Checked AFTER authorization above so a
             # cached repeat can never bypass the identity gate. After auto-compact cleared earlier
@@ -2493,6 +2592,131 @@ class AgentLoop:
             "file write is a failure."
         )
 
+    def _brief_sop_skip_message(
+        self, tool_name: str, arguments: Mapping[str, Any]
+    ) -> str | None:
+        """Return a skip envelope when an A-share brief SOP step already succeeded."""
+        if self._broker_trade_review_mode and tool_name in {
+            "get_sector_info",
+            "get_northbound_flow",
+            "get_stock_news",
+            "web_search",
+        }:
+            return json.dumps(
+                {
+                    "skipped": True,
+                    "reason": (
+                        "broker trade review task: optional market/news tools are "
+                        "disabled unless the user explicitly asked for 大盘/板块/北向/新闻. "
+                        "Finish the report from trading_account / trading_positions / "
+                        "trading_history_deals / trading_orders, or ask the user whether "
+                        "they want market background added."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if self._broker_trade_review_mode and tool_name == "get_market_data":
+            codes = arguments.get("codes")
+            if isinstance(codes, list):
+                normalized, _alias_map = normalize_market_data_codes(
+                    [str(code).strip() for code in codes if str(code).strip()]
+                )
+                if set(A_SHARE_BRIEF_INDEX_CODES).issubset(set(normalized)):
+                    return json.dumps(
+                        {
+                            "skipped": True,
+                            "reason": (
+                                "broker trade review: the four-index daily-brief "
+                                "batch is disabled by default. Use trading_* broker "
+                                "fields for P&L; only fetch indices if the user "
+                                "explicitly requested market background."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+        if not self._a_share_brief_mode:
+            return None
+
+        if tool_name == "web_search":
+            return json.dumps(
+                {
+                    "skipped": True,
+                    "reason": (
+                        "web_search is disabled for A-share daily brief tasks. "
+                        "Use get_market_data, get_sector_info (ranking), "
+                        "get_northbound_flow, and get_stock_news (global) only."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if tool_name == "get_sector_info" and str(arguments.get("mode") or "").strip() == "ranking":
+            if "sector_ranking" in self._brief_sop_done:
+                return json.dumps(
+                    {
+                        "skipped": True,
+                        "reason": (
+                            "get_sector_info ranking already succeeded this run. "
+                            "Do not retry — continue with the next SOP step or answer."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+        if tool_name == "get_northbound_flow" and "northbound" in self._brief_sop_done:
+            return json.dumps(
+                {
+                    "skipped": True,
+                    "reason": (
+                        "get_northbound_flow already succeeded this run. "
+                        "Do not retry — continue with the next SOP step or answer."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if (
+            tool_name == "get_stock_news"
+            and str(arguments.get("scope") or "").strip().casefold() == "global"
+            and "news_global" in self._brief_sop_done
+        ):
+            return json.dumps(
+                {
+                    "skipped": True,
+                    "reason": (
+                        "get_stock_news(scope='global') already succeeded this run. "
+                        "Do not retry — write the final brief now."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        return None
+
+    def _mark_brief_sop_done(self, tool_name: str, arguments: Mapping[str, Any]) -> None:
+        """Record successful completion of one A-share brief SOP step."""
+        if not self._a_share_brief_mode:
+            return
+        if tool_name == "get_sector_info" and str(arguments.get("mode") or "").strip() == "ranking":
+            self._brief_sop_done.add("sector_ranking")
+        elif tool_name == "get_northbound_flow":
+            self._brief_sop_done.add("northbound")
+        elif (
+            tool_name == "get_stock_news"
+            and str(arguments.get("scope") or "").strip().casefold() == "global"
+        ):
+            self._brief_sop_done.add("news_global")
+        elif tool_name == "get_market_data":
+            codes = arguments.get("codes")
+            if not isinstance(codes, list):
+                return
+            normalized, _alias_map = normalize_market_data_codes(
+                [str(code).strip() for code in codes if str(code).strip()]
+            )
+            if set(A_SHARE_BRIEF_INDEX_CODES).issubset(set(normalized)):
+                self._brief_sop_done.add("brief_indices")
+
     def _identical_call_key(self, tool_name: str, arguments: Mapping[str, Any]) -> tuple[str, str] | None:
         """Build a stable key identifying a deterministic tool invocation.
 
@@ -2554,6 +2778,16 @@ class AgentLoop:
                 )
         if success:
             self._called_ok.add(tc.name)
+            if tc.name == "get_market_data":
+                coverage_key = _market_data_coverage_key(
+                    _normalize_tool_run_dir(tc.arguments, self.memory.run_dir)
+                )
+                if coverage_key is not None and _market_data_has_bars(result):
+                    self._market_data_cache[coverage_key] = result
+            self._mark_brief_sop_done(
+                tc.name,
+                _normalize_tool_run_dir(tc.arguments, self.memory.run_dir),
+            )
             if tc.name == "backtest":
                 try:
                     _archive_backtest_result(result, self.memory.run_dir)
