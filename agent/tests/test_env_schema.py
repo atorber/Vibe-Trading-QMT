@@ -129,6 +129,13 @@ class TestEnvConfigDefaults:
         assert c.data.qmt_bridge_api_key == ""
         assert c.data.qmt_bridge_account_id == ""
         assert c.data.qmt_bridge_account_type == ""
+        # Per-market source-order overrides default to unset (default chains).
+        for market in (
+            "a_share", "us_equity", "hk_equity", "india_equity", "kr_equity",
+            "ca_equity", "vietnam_equity", "crypto", "futures", "fund",
+            "macro", "forex", "index",
+        ):
+            assert getattr(c.data, f"market_data_order_{market}") == ""
 
     def test_api_defaults(self) -> None:
         c = EnvConfig()

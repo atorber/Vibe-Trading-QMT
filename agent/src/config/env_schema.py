@@ -222,6 +222,24 @@ class DataConfig(_EnvBase):
     qmt_bridge_api_key: str = Field(alias="QMT_BRIDGE_API_KEY", default="")
     qmt_bridge_account_id: str = Field(alias="QMT_BRIDGE_ACCOUNT_ID", default="")
     qmt_bridge_account_type: str = Field(alias="QMT_BRIDGE_ACCOUNT_TYPE", default="")
+    # Per-market source-order overrides (Settings page "source priority").
+    # Value: comma-separated permutation of the market's default chain, e.g.
+    # MARKET_DATA_ORDER_A_SHARE=tushare,tencent,mootdx,... Applied by
+    # backtest.loaders.registry.refresh_source_order_overrides() (which reads
+    # os.getenv directly); declared here for visibility/validation parity.
+    market_data_order_a_share: str = Field(alias="MARKET_DATA_ORDER_A_SHARE", default="")
+    market_data_order_us_equity: str = Field(alias="MARKET_DATA_ORDER_US_EQUITY", default="")
+    market_data_order_hk_equity: str = Field(alias="MARKET_DATA_ORDER_HK_EQUITY", default="")
+    market_data_order_india_equity: str = Field(alias="MARKET_DATA_ORDER_INDIA_EQUITY", default="")
+    market_data_order_kr_equity: str = Field(alias="MARKET_DATA_ORDER_KR_EQUITY", default="")
+    market_data_order_ca_equity: str = Field(alias="MARKET_DATA_ORDER_CA_EQUITY", default="")
+    market_data_order_vietnam_equity: str = Field(alias="MARKET_DATA_ORDER_VIETNAM_EQUITY", default="")
+    market_data_order_crypto: str = Field(alias="MARKET_DATA_ORDER_CRYPTO", default="")
+    market_data_order_futures: str = Field(alias="MARKET_DATA_ORDER_FUTURES", default="")
+    market_data_order_fund: str = Field(alias="MARKET_DATA_ORDER_FUND", default="")
+    market_data_order_macro: str = Field(alias="MARKET_DATA_ORDER_MACRO", default="")
+    market_data_order_forex: str = Field(alias="MARKET_DATA_ORDER_FOREX", default="")
+    market_data_order_index: str = Field(alias="MARKET_DATA_ORDER_INDEX", default="")
 
 
 # ---------------------------------------------------------------------------
