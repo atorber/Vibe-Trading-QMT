@@ -1005,8 +1005,46 @@ function ResultPanel({ result }: { result: AlphaBenchResult }) {
     { label: i18n.t("alphaZoo.skipped"), value: result.skipped ?? 0, icon: Loader2, tone: "text-muted-foreground" },
   ];
 
+  const tested = result.n_alphas_tested ?? 0;
+  const skippedCount = result.skipped ?? 0;
+  const allSkipped = skippedCount > 0 && tested === 0;
+  const constituentCount =
+    typeof result.meta?.constituent_count === "number"
+      ? result.meta.constituent_count
+      : null;
+
   return (
     <div className="space-y-4">
+      {(allSkipped || (constituentCount !== null && constituentCount < 5)) && (
+        <section className="rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm">
+          <div className="flex items-start gap-2 font-medium text-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <div className="space-y-1">
+              <p>{i18n.t("alphaZoo.allSkippedTitle")}</p>
+              <p className="font-normal text-muted-foreground">
+                {constituentCount !== null && constituentCount < 5
+                  ? i18n.t("alphaZoo.thinPanelHint", { count: constituentCount })
+                  : i18n.t("alphaZoo.allSkippedBody")}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {result.skip_reason_summary && result.skip_reason_summary.length > 0 && (
+        <section className="rounded-xl border border-border/60 bg-card p-4 text-sm shadow-sm">
+          <h3 className="font-medium text-muted-foreground">
+            {i18n.t("alphaZoo.skipReasonSummaryTitle")}
+          </h3>
+          <ul className="mt-2 space-y-1.5 font-mono text-xs text-muted-foreground">
+            {result.skip_reason_summary.map((item) => (
+              <li key={`${item.reason}-${item.count}`} className="break-words">
+                <span className="text-foreground">{item.count}×</span> {item.reason}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {totals.map(({ label, value, icon: Icon, tone }) => (

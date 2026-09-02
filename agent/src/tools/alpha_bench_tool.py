@@ -45,6 +45,7 @@ import pandas as pd
 from backtest.loaders.cn_adjust import apply_qfq as _apply_qfq
 from src.agent.tools import BaseTool
 from src.config.accessor import get_env_config
+from src.factors.factor_analysis_core import _MIN_VALID_PER_DATE as MIN_CROSS_SECTIONAL_INSTRUMENTS
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,32 @@ def _parse_period(period: str) -> tuple[str, str]:
     return start, end
 
 
+def _validate_panel_cross_section(
+    panel: dict[str, pd.DataFrame],
+    *,
+    universe: str,
+    start: str,
+    end: str,
+) -> None:
+    """Reject panels too thin for cross-sectional IC (needs >=5 names per bar)."""
+    close_df = panel.get("close")
+    if close_df is None or close_df.empty:
+        raise RuntimeError(
+            f"universe {universe!r} produced empty panel for {start}..{end}; "
+            "check network / token / date range"
+        )
+    n_symbols = int(close_df.shape[1])
+    if n_symbols < MIN_CROSS_SECTIONAL_INSTRUMENTS:
+        raise RuntimeError(
+            f"universe {universe!r} panel has only {n_symbols} instrument(s) for "
+            f"{start}..{end}; cross-sectional IC needs at least "
+            f"{MIN_CROSS_SECTIONAL_INSTRUMENTS}. Delete "
+            f"~/.vibe-trading/cache/{universe}_{start}_{end}.pkl* and retry "
+            "(often caused by Tushare rate limits, token permissions, or a "
+            "partial fetch that was cached)."
+        )
+
+
 def _load_universe_panel(
     universe: str, period: str, *, use_cache: bool = True
 ) -> dict[str, pd.DataFrame]:
@@ -129,8 +156,20 @@ def _load_universe_panel(
     if use_cache and cache_path.is_file():
         cached = _read_pickle_cache(cache_path)
         if cached is not None:
-            logger.info("universe %s: loaded from cache %s", universe, cache_path)
-            return cached
+            try:
+                _validate_panel_cross_section(
+                    cached, universe=universe, start=start, end=end
+                )
+            except RuntimeError as exc:
+                logger.warning(
+                    "universe %s: refusing stale cache %s (%s); refetching",
+                    universe,
+                    cache_path.name,
+                    exc,
+                )
+            else:
+                logger.info("universe %s: loaded from cache %s", universe, cache_path)
+                return cached
 
     if universe == "csi300":
         panel = _load_csi300_panel(start, end)
@@ -141,11 +180,7 @@ def _load_universe_panel(
     else:  # pragma: no cover — guarded above
         raise ValueError(f"unhandled universe {universe!r}")
 
-    if not panel or "close" not in panel or panel["close"].empty:
-        raise RuntimeError(
-            f"universe {universe!r} produced empty panel for {start}..{end}; "
-            "check network / token / date range"
-        )
+    _validate_panel_cross_section(panel, universe=universe, start=start, end=end)
 
     # btc-usdt loader returns a single-column close (one instrument). Cross-
     # sectional IC needs >= 2 instruments — short-circuit with a clean error
@@ -306,6 +341,192 @@ _SP500_FALLBACK_CODES = [
 ]
 
 
+def _ts_code_from_a_share_digits(digits: str) -> str:
+    """Map a 6-digit A-share code to a Tushare-style ``ts_code``."""
+    code = str(digits).strip().zfill(6)
+    if code.startswith(("5", "6", "9")):
+        return f"{code}.SH"
+    return f"{code}.SZ"
+
+
+def _fetch_csi300_constituents_akshare() -> tuple[list[str], str | None]:
+    """CSI 300 roster via akshare when Tushare ``index_weight`` is unavailable."""
+    try:
+        import akshare as ak
+    except ImportError:
+        return [], None
+    try:
+        frame = ak.index_stock_cons_csindex(symbol="000300")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("csi300 akshare constituents failed: %s", exc)
+        return [], None
+    if frame is None or frame.empty:
+        return [], None
+
+    code_col = None
+    for col in frame.columns:
+        name = str(col)
+        if "成分" in name and "代码" in name:
+            code_col = col
+            break
+    if code_col is None and len(frame.columns) > 4:
+        code_col = frame.columns[4]
+
+    if code_col is None:
+        return [], None
+
+    raw_codes = {
+        str(value).strip().zfill(6)
+        for value in frame[code_col].astype(str)
+        if str(value).strip().isdigit() and len(str(value).strip()) == 6
+    }
+    raw_codes -= {"000300", "399300", "399006", "000016", "000905", "000852"}
+    codes = sorted(_ts_code_from_a_share_digits(code) for code in raw_codes)
+    as_of = str(frame.iloc[0, 0]) if len(frame) else None
+    logger.info(
+        "csi300: %d names from akshare index_stock_cons_csindex (as of %s)",
+        len(codes),
+        as_of,
+    )
+    return codes, as_of
+
+
+def _normalize_akshare_a_share_daily(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Normalize ``stock_zh_a_hist`` output to the bench panel schema."""
+    if df is None or df.empty:
+        return None
+    work = df.copy()
+    rename = {
+        "日期": "trade_date",
+        "开盘": "open",
+        "最高": "high",
+        "最低": "low",
+        "收盘": "close",
+        "成交量": "volume",
+        "成交额": "amount_raw",
+    }
+    work = work.rename(columns={key: val for key, val in rename.items() if key in work.columns})
+    if "trade_date" not in work.columns:
+        return None
+    work["trade_date"] = pd.to_datetime(work["trade_date"], errors="coerce")
+    work = work.dropna(subset=["trade_date"]).set_index("trade_date").sort_index()
+    for col in ("open", "high", "low", "close", "volume"):
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    if "amount_raw" in work.columns:
+        # Match Tushare ``amount`` units (千元) so VWAP math stays shared.
+        work["amount"] = pd.to_numeric(work["amount_raw"], errors="coerce") / 1000.0
+    keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in work.columns]
+    out = work[keep].dropna(subset=["open", "high", "low", "close"])
+    return out if not out.empty else None
+
+
+def _fetch_csi300_symbol_akshare(code: str, start: str, end: str) -> pd.DataFrame | None:
+    """Fetch one A-share via akshare forward-adjusted daily bars."""
+    try:
+        import akshare as ak
+    except ImportError:
+        return None
+    symbol = code.split(".")[0]
+    sd = start.replace("-", "")
+    ed = end.replace("-", "")
+    try:
+        raw = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=sd,
+            end_date=ed,
+            adjust="qfq",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("csi300 akshare %s failed: %s", code, exc)
+        return None
+    return _normalize_akshare_a_share_daily(raw)
+
+
+def _fetch_csi300_prices_akshare(
+    codes: list[str], start: str, end: str
+) -> dict[str, pd.DataFrame]:
+    """Parallel akshare fetch used when Tushare ``adj_factor`` is unavailable."""
+    fetched: dict[str, pd.DataFrame] = {}
+    with ThreadPoolExecutor(max_workers=_CSI300_FETCH_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_csi300_symbol_akshare, code, start, end): code
+            for code in codes
+        }
+        for fut in as_completed(futures):
+            code = futures[fut]
+            try:
+                frame = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("csi300 akshare worker raised for %s: %s", code, exc)
+                continue
+            if frame is not None and not frame.empty:
+                fetched[code] = frame
+    return fetched
+
+
+# QMT Bridge ``market_data_ex`` accepts comma-separated lists; keep batches modest
+# for URL length and xtdata latency.
+_CSI300_QMT_BATCH = 50
+
+
+def _normalize_qmt_daily_for_bench(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Map QMT OHLCV (volume in shares) to the Tushare bench panel schema."""
+    if df is None or df.empty:
+        return None
+    work = df.copy()
+    required = ("open", "high", "low", "close", "volume")
+    if not all(col in work.columns for col in required):
+        return None
+    vol_shares = pd.to_numeric(work["volume"], errors="coerce")
+    close = pd.to_numeric(work["close"], errors="coerce")
+    for col in ("open", "high", "low", "close"):
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+    # Bench VWAP math expects Tushare units: volume in 手, amount in 千元.
+    work["volume"] = vol_shares / 100.0
+    if "amount" in work.columns:
+        work["amount"] = pd.to_numeric(work["amount"], errors="coerce") / 1000.0
+    else:
+        work["amount"] = vol_shares * close / 1000.0
+    keep = ["open", "high", "low", "close", "volume", "amount"]
+    out = work[keep].dropna(subset=["open", "high", "low", "close"])
+    return out if not out.empty else None
+
+
+def _fetch_csi300_prices_qmt(
+    codes: list[str], start: str, end: str
+) -> dict[str, pd.DataFrame]:
+    """Batch-fetch A-share qfq daily bars via QMT Bridge ``market_data_ex``."""
+    if not codes:
+        return {}
+    try:
+        from backtest.loaders.qmt_loader import DataLoader
+    except ImportError:
+        return {}
+
+    loader = DataLoader()
+    fetched: dict[str, pd.DataFrame] = {}
+    for offset in range(0, len(codes), _CSI300_QMT_BATCH):
+        batch = codes[offset : offset + _CSI300_QMT_BATCH]
+        try:
+            chunk = loader.fetch(batch, start, end, interval="1D")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("csi300 qmt batch %d failed: %s", offset // _CSI300_QMT_BATCH, exc)
+            continue
+        for code, frame in chunk.items():
+            normalized = _normalize_qmt_daily_for_bench(frame)
+            if normalized is not None:
+                fetched[code] = normalized
+    if fetched:
+        logger.info(
+            "csi300: %d/%d names from QMT Bridge (qfq via dividend_type=front)",
+            len(fetched),
+            len(codes),
+        )
+    return fetched
+
+
 def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     """CSI 300 panel via Tushare. Includes ``amount`` (required by gtja191).
 
@@ -314,17 +535,18 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     blue-chip fallback so the bench still runs.
     """
     token = get_env_config().data.tushare_token.strip()
-    if not token or token == "your-tushare-token":
-        raise RuntimeError(
-            "TUSHARE_TOKEN not in agent/.env or environment; required for csi300 universe"
-        )
+    has_tushare = bool(token) and token != "your-tushare-token"
+    pro = None
+    if has_tushare:
+        try:
+            import tushare as ts
+        except ImportError as exc:
+            logger.warning("tushare not installed (%s); csi300 will use akshare", exc)
+        else:
+            pro = ts.pro_api(token)
+    else:
+        logger.warning("TUSHARE_TOKEN not set; csi300 will use akshare for data")
 
-    try:
-        import tushare as ts
-    except ImportError as exc:
-        raise RuntimeError(f"tushare not installed: {exc}") from exc
-
-    pro = ts.pro_api(token)
     sd = start.replace("-", "")
     ed = end.replace("-", "")
 
@@ -332,88 +554,132 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
     constituent_source = "tushare index_weight"
     constituent_source_date: str | None = None
     membership: pd.DataFrame | None = None
-    try:
-        # Reach back before ``start`` so the snapshot that was in force on the
-        # first requested day is included; Tushare publishes month-end rosters.
-        lookback = (pd.Timestamp(start) - pd.Timedelta(days=60)).strftime("%Y%m%d")
-        weights = pro.index_weight(
-            index_code="399300.SZ", start_date=lookback, end_date=ed
-        )
-        if weights is not None and not weights.empty:
-            frame = weights.copy()
-            frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
-            frame = frame.dropna(subset=["trade_date", "con_code"])
-            constituent_source_date = str(weights["trade_date"].max())
-            # Every name that was a member at any point in the window, so the
-            # panel can carry a name that later left the index.
-            codes = sorted(frame["con_code"].astype(str).unique())
-            membership = (
-                frame.assign(_member=True)
-                .pivot_table(
-                    index="trade_date",
-                    columns="con_code",
-                    values="_member",
-                    aggfunc="first",
+    if pro is not None:
+        try:
+            # Reach back before ``start`` so the snapshot that was in force on the
+            # first requested day is included; Tushare publishes month-end rosters.
+            lookback = (pd.Timestamp(start) - pd.Timedelta(days=60)).strftime("%Y%m%d")
+            weights = pro.index_weight(
+                index_code="399300.SZ", start_date=lookback, end_date=ed
+            )
+            if weights is not None and not weights.empty:
+                frame = weights.copy()
+                frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
+                frame = frame.dropna(subset=["trade_date", "con_code"])
+                constituent_source_date = str(weights["trade_date"].max())
+                # Every name that was a member at any point in the window, so the
+                # panel can carry a name that later left the index.
+                codes = sorted(frame["con_code"].astype(str).unique())
+                membership = (
+                    frame.assign(_member=True)
+                    .pivot_table(
+                        index="trade_date",
+                        columns="con_code",
+                        values="_member",
+                        aggfunc="first",
+                    )
+                    .notna()
+                    .sort_index()
                 )
-                .notna()
-                .sort_index()
-            )
-            logger.info(
-                "csi300: %d names ever a member across %d roster snapshots",
-                len(codes),
-                len(membership),
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("csi300 index_weight failed (%s); using fallback list", exc)
+                logger.info(
+                    "csi300: %d names ever a member across %d roster snapshots",
+                    len(codes),
+                    len(membership),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("csi300 index_weight failed (%s); trying akshare roster", exc)
 
     if not codes:
-        codes = list(_CSI300_FALLBACK_CODES)
-        constituent_source = "hand-picked fallback"
-        constituent_source_date = None
-        logger.warning("csi300: using %d-name fallback (degraded run)", len(codes))
+        ak_codes, ak_as_of = _fetch_csi300_constituents_akshare()
+        if ak_codes:
+            codes = ak_codes
+            constituent_source = "akshare index_stock_cons_csindex"
+            constituent_source_date = ak_as_of
+        else:
+            codes = list(_CSI300_FALLBACK_CODES)
+            constituent_source = "hand-picked fallback"
+            constituent_source_date = None
+            logger.warning("csi300: using %d-name fallback (degraded run)", len(codes))
 
-    # Fetch raw daily in parallel — we need ``amount`` which the standard
-    # loader drops. Tushare's free tier permits ~200 calls/min so 4 concurrent
-    # workers is comfortably under the rate limit even for a full 300-name list.
-    def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
-        df = _retry(lambda: pro.daily(ts_code=code, start_date=sd, end_date=ed))
-        if df is None or df.empty:
-            return code, None
-        df = df.sort_values("trade_date").copy()
-        df["trade_date"] = pd.to_datetime(df["trade_date"])
-        df = df.set_index("trade_date")
-        df = df.rename(columns={"vol": "volume"})
-        for col in ("open", "high", "low", "close", "volume", "amount"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        keep = [c for c in ("open", "high", "low", "close", "volume", "amount") if c in df.columns]
-        df = df[keep].dropna(subset=["open", "high", "low", "close"])
-        factor = _retry(lambda: pro.adj_factor(ts_code=code, start_date=sd, end_date=ed))
-        return code, _apply_qfq(df, factor)
-
+    price_adjustment = "tushare qfq via adj_factor"
     fetched: dict[str, pd.DataFrame] = {}
-    with ThreadPoolExecutor(max_workers=_CSI300_FETCH_WORKERS) as pool:
-        futures = [pool.submit(_fetch_one, code) for code in codes]
-        for fut in as_completed(futures):
-            try:
-                code, frame = fut.result()
-            except Exception as exc:  # noqa: BLE001 — _retry already logged
-                logger.warning("csi300 fetch worker raised: %s", exc)
-                continue
-            if frame is not None and not frame.empty:
-                fetched[code] = frame
+
+    if pro is not None:
+        # Fetch raw daily in parallel — we need ``amount`` which the standard
+        # loader drops. Tushare's free tier permits ~200 calls/min so 4 concurrent
+        # workers is comfortably under the rate limit even for a full 300-name list.
+        def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
+            df = _retry(lambda: pro.daily(ts_code=code, start_date=sd, end_date=ed))
+            if df is None or df.empty:
+                return code, None
+            df = df.sort_values("trade_date").copy()
+            df["trade_date"] = pd.to_datetime(df["trade_date"])
+            df = df.set_index("trade_date")
+            df = df.rename(columns={"vol": "volume"})
+            for col in ("open", "high", "low", "close", "volume", "amount"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            keep = [
+                c for c in ("open", "high", "low", "close", "volume", "amount") if c in df.columns
+            ]
+            df = df[keep].dropna(subset=["open", "high", "low", "close"])
+            factor = _retry(lambda: pro.adj_factor(ts_code=code, start_date=sd, end_date=ed))
+            adjusted = _apply_qfq(df, factor)
+            if adjusted is not None:
+                return code, adjusted
+            bar = _retry(
+                lambda: ts.pro_bar(ts_code=code, adj="qfq", start_date=sd, end_date=ed),
+            )
+            if bar is None or bar.empty:
+                return code, None
+            bar = bar.sort_values("trade_date").copy()
+            bar["trade_date"] = pd.to_datetime(bar["trade_date"], errors="coerce")
+            bar = bar.set_index("trade_date")
+            bar = bar.rename(columns={"vol": "volume"})
+            for col in ("open", "high", "low", "close", "volume", "amount"):
+                if col in bar.columns:
+                    bar[col] = pd.to_numeric(bar[col], errors="coerce")
+            keep = [
+                c for c in ("open", "high", "low", "close", "volume", "amount") if c in bar.columns
+            ]
+            bar = bar[keep].dropna(subset=["open", "high", "low", "close"])
+            return code, bar if not bar.empty else None
+
+        with ThreadPoolExecutor(max_workers=_CSI300_FETCH_WORKERS) as pool:
+            futures = [pool.submit(_fetch_one, code) for code in codes]
+            for fut in as_completed(futures):
+                try:
+                    code, frame = fut.result()
+                except Exception as exc:  # noqa: BLE001 — _retry already logged
+                    logger.warning("csi300 fetch worker raised: %s", exc)
+                    continue
+                if frame is not None and not frame.empty:
+                    fetched[code] = frame
+
+    if not fetched:
+        logger.warning(
+            "csi300: tushare daily/adj_factor returned 0 usable symbols; "
+            "trying QMT Bridge qfq"
+        )
+        fetched = _fetch_csi300_prices_qmt(codes, start, end)
+        if fetched:
+            price_adjustment = "qmt bridge qfq (dividend_type=front)"
+
+    if not fetched:
+        logger.warning("csi300: QMT Bridge returned 0 symbols; falling back to akshare qfq")
+        fetched = _fetch_csi300_prices_akshare(codes, start, end)
+        price_adjustment = "akshare qfq"
 
     # A name with no usable adjustment factors is dropped rather than benched on
     # raw prices, so the drop has to be visible or it becomes its own silent bias.
     dropped = sorted(set(codes) - set(fetched))
     if not fetched:
         raise RuntimeError(
-            "csi300: no symbol survived corporate-action adjustment — "
-            "pro.adj_factor returned nothing usable for any of the "
-            f"{len(codes)} names, which usually means the Tushare token lacks "
-            "adj_factor permission. Benching on unadjusted prices is not an "
-            "alternative: an ex-date injects a fabricated cross-sectional "
-            "return, measured at -47.2% on 300750.SZ 2023-04-26."
+            "csi300: no symbol survived price fetch — Tushare adj_factor returned "
+            "nothing usable (token may lack adj_factor permission), QMT Bridge "
+            "was unreachable or returned empty bars, and the akshare qfq fallback "
+            "also failed. Ensure QMT Bridge is running (`qmt-server`), install "
+            "akshare (`pip install akshare`), or upgrade the Tushare token, then retry."
         )
     if dropped:
         logger.warning(
@@ -462,8 +728,7 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
         "constituent_source": constituent_source,
         "constituent_source_date": constituent_source_date,
         "constituent_count": len(codes),
-        # Prices are corporate-action adjusted; raw pro.daily is not.
-        "price_adjustment": "qfq",
+        "price_adjustment": price_adjustment,
         "dropped_unadjustable": len(dropped),
     }
     return panel

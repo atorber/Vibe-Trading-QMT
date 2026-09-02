@@ -89,7 +89,7 @@ def test_csi300_reports_point_in_time_membership(
         "constituent_source_date": "20240131",
         # The union of both snapshots, not the terminal roster.
         "constituent_count": 3,
-        "price_adjustment": "qfq",
+        "price_adjustment": "tushare qfq via adj_factor",
         "dropped_unadjustable": 0,
     }
 
@@ -123,9 +123,16 @@ def test_csi300_reports_hand_picked_fallback(
     monkeypatch.setattr(
         tool,
         "_CSI300_FALLBACK_CODES",
-        ["600519.SH", "000001.SZ"],
+        [
+            "600519.SH",
+            "000001.SZ",
+            "000002.SZ",
+            "600036.SH",
+            "000858.SZ",
+        ],
     )
     _install_fake_tushare(monkeypatch, _FakeTusharePro(RuntimeError("offline")))
+    monkeypatch.setattr(tool, "_fetch_csi300_constituents_akshare", lambda: ([], None))
 
     panel = tool._load_csi300_panel("2024-01-01", "2024-01-31")
 
@@ -138,8 +145,8 @@ def test_csi300_reports_hand_picked_fallback(
         "degraded": True,
         "constituent_source": "hand-picked fallback",
         "constituent_source_date": None,
-        "constituent_count": 2,
-        "price_adjustment": "qfq",
+        "constituent_count": 5,
+        "price_adjustment": "tushare qfq via adj_factor",
         "dropped_unadjustable": 0,
     }
 

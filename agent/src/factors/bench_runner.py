@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Callable, Iterable
 
@@ -117,6 +118,19 @@ def categorise(row: dict[str, Any]) -> str:
     if ic_mean < -0.02 and abs(t) > 2:
         return "reversed"
     return "dead"
+
+
+def _summarize_skips(
+    skipped: list[dict[str, Any]], *, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Aggregate per-alpha skip reasons for the wire/API summary."""
+    if not skipped:
+        return []
+    counts = Counter(str(item.get("reason", "unknown")) for item in skipped)
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in counts.most_common(limit)
+    ]
 
 
 def theme_breakdown(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
@@ -401,6 +415,7 @@ def run_bench(
             "dead_examples": [_slim(r) for r in rows_by_ic[:5]],
             "rows": rows,
             "skipped": skipped,
+            "skip_reason_summary": _summarize_skips(skipped),
             "meta": universe_meta,
             "wall_seconds": round(time.monotonic() - start, 2),
         }

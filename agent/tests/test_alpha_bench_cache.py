@@ -48,6 +48,26 @@ def test_cache_roundtrips_when_untampered(tmp_path, no_api_key):
     pd.testing.assert_frame_equal(loaded["close"], panel["close"])
 
 
+def test_thin_panel_is_rejected_before_cache_write(monkeypatch, tmp_path, no_api_key):
+    close = pd.DataFrame(
+        {"AAA": [10.0, 11.0, 12.0]},
+        index=pd.date_range("2020-01-01", periods=3, freq="B"),
+    )
+    panel = {"close": close}
+
+    with pytest.raises(RuntimeError, match="only 1 instrument"):
+        abt._validate_panel_cross_section(
+            panel, universe="csi300", start="2020-01-01", end="2020-12-31"
+        )
+
+    monkeypatch.setattr(abt, "_load_csi300_panel", lambda _s, _e: panel)
+    with pytest.raises(RuntimeError, match="only 1 instrument"):
+        abt._load_universe_panel("csi300", "2020-2020", use_cache=False)
+
+    cache_path = tmp_path / "csi300_2020-01-01_2020-12-31.pkl"
+    assert not cache_path.is_file()
+
+
 def test_tampered_pickle_with_unkeyed_sha256_is_rejected(tmp_path, no_api_key):
     cache_path = tmp_path / "sp500_2020-01-01_2020-12-31.pkl"
     abt._write_pickle_cache(tmp_path, cache_path, _panel())

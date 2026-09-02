@@ -1008,6 +1008,10 @@
     "reversed": "Reversed",
     "dead": "Dead",
     "skipped": "Skipped",
+    "allSkippedTitle": "Every alpha was skipped",
+    "allSkippedBody": "No alpha produced an IC series. Common causes: an incomplete universe panel (e.g. a cache with only one symbol), missing sector tags, or Tushare permission/rate limits. Delete the matching file under ~/.vibe-trading/cache/ and retry.",
+    "skipReasonSummaryTitle": "Skip reason summary",
+    "thinPanelHint": "Universe panel has only {{count}} symbol(s); cross-sectional IC needs at least 5.",
     "topByIr": "Top 5 by IR",
     "mostReversed": "Most reversed",
     "byTheme": "By theme",
@@ -1697,7 +1701,7 @@
     },
     "history": {
       "title": "Asset history",
-      "hint": "Complete snapshots only; changes may include cash flows.",
+      "hint": "Total and net assets; complete snapshots only — changes may include cash flows.",
       "count": "{{count}} complete snapshots",
       "empty": "History begins after a complete refresh"
     },

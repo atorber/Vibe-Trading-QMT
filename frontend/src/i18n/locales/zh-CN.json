@@ -987,6 +987,10 @@
     "reversed": "反转",
     "dead": "失效",
     "skipped": "跳过",
+    "allSkippedTitle": "全部因子被跳过",
+    "allSkippedBody": "没有因子完成 IC 计算。常见原因：标的池行情不完整（例如缓存里只有 1 只股票）、缺少行业分类标签，或 Tushare 权限/限流。请删除 ~/.vibe-trading/cache 下对应缓存后重试。",
+    "skipReasonSummaryTitle": "跳过原因摘要",
+    "thinPanelHint": "标的池仅 {{count}} 只股票，截面 IC 至少需要 5 只。",
     "topByIr": "IR 前 5 名",
     "mostReversed": "反转最多",
     "byTheme": "按主题",
@@ -1697,7 +1701,7 @@
     },
     "history": {
       "title": "资产历史",
-      "hint": "只显示完整快照；资产变化可能包含入金和出金。",
+      "hint": "同时展示总资产与净资产；仅完整快照，变化可能包含入金和出金。",
       "count": "{{count}} 个完整快照",
       "empty": "完成首次完整刷新后开始积累"
     },

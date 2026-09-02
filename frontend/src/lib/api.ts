@@ -1629,14 +1629,22 @@ export interface AlphaBenchTopRow {
   category: "alive" | "reversed" | "dead";
 }
 
+export interface AlphaBenchSkipSummary {
+  reason: string;
+  count: number;
+}
+
 export interface AlphaBenchResult {
   alive: number;
   reversed: number;
   dead: number;
   skipped?: number;
+  n_alphas_tested?: number;
   top5_by_ir: AlphaBenchTopRow[];
   dead_examples: AlphaBenchTopRow[];
   by_theme: Record<string, { alive: number; reversed: number; dead: number }>;
+  meta?: Record<string, unknown>;
+  skip_reason_summary?: AlphaBenchSkipSummary[];
 }
 
 export interface AlphaCompareRequest {

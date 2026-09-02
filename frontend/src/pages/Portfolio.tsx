@@ -895,24 +895,61 @@ function HistoryChart({ history, displayCurrency = "USD" }: { history: Portfolio
     const theme = getChartTheme();
     const chart = echarts.init(ref.current);
     const rows = history.slice(-180);
+    const totalLabel = t("portfolio.metrics.total");
+    const netLabel = t("portfolio.metrics.netAssets");
+    const totalColor = theme.warningColor;
+    const netColor = theme.infoColor;
     chart.setOption({
       backgroundColor: "transparent",
-      grid: { left: 18, right: 18, top: 25, bottom: 28, containLabel: true },
+      legend: {
+        data: [totalLabel, netLabel],
+        top: 0,
+        right: 0,
+        textStyle: { color: theme.textColor },
+      },
+      grid: { left: 18, right: 18, top: 36, bottom: 28, containLabel: true },
       tooltip: {
         trigger: "axis",
         backgroundColor: theme.tooltipBg,
         borderColor: theme.tooltipBorder,
         textStyle: { color: theme.tooltipText },
-        formatter: (items: Array<{ dataIndex: number; value: number }>) => { const item = items[0]; const row = rows[item.dataIndex]; return `${dateTime(row?.created_at)}<br/>${money(Number(item?.value), displayCurrency)}`; },
+        formatter: (items: Array<{ seriesName?: string; value?: number; dataIndex?: number }>) => {
+          const idx = items[0]?.dataIndex;
+          const row = idx == null ? undefined : rows[idx];
+          if (!row) return "";
+          const lines = items.map(
+            (item) => `${item.seriesName}: ${money(Number(item.value), displayCurrency)}`,
+          );
+          return `${dateTime(row.created_at)}<br/>${lines.join("<br/>")}`;
+        },
       },
       xAxis: { type: "category", boundaryGap: false, data: rows.map((row) => new Date(row.created_at).toLocaleString(uiLocale(), { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })), axisLabel: { color: theme.textColor, hideOverlap: true }, axisLine: { lineStyle: { color: theme.gridColor } } },
       yAxis: { type: "value", scale: true, axisLabel: { color: theme.textColor, formatter: (value: number) => compactMoney(value, displayCurrency) }, splitLine: { lineStyle: { color: theme.gridColor, opacity: 0.45 } } },
-      series: [{ type: "line", data: rows.map((row) => historyNetAssets(row, displayCurrency)), smooth: true, symbol: rows.length < 30 ? "circle" : "none", lineStyle: { width: 2, color: "#4f6edb" }, itemStyle: { color: "#4f6edb" }, areaStyle: { color: "rgba(79,110,219,0.10)" } }],
+      series: [
+        {
+          name: totalLabel,
+          type: "line",
+          data: rows.map((row) => historyTotals(row, displayCurrency)),
+          smooth: true,
+          symbol: rows.length < 30 ? "circle" : "none",
+          lineStyle: { width: 2, color: totalColor },
+          itemStyle: { color: totalColor },
+        },
+        {
+          name: netLabel,
+          type: "line",
+          data: rows.map((row) => historyNetAssets(row, displayCurrency)),
+          smooth: true,
+          symbol: rows.length < 30 ? "circle" : "none",
+          lineStyle: { width: 2, color: netColor },
+          itemStyle: { color: netColor },
+        },
+      ],
     });
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);
     return () => { window.removeEventListener("resize", resize); chart.dispose(); };
-  }, [history, displayCurrency, dark, instance.language]);
+  }, [history, displayCurrency, dark, instance.language, t]);
   return <section className="rounded-xl border bg-card p-5">
     <div className="flex items-start justify-between gap-3">
       <div><h2 className="font-semibold">{t("portfolio.history.title")}</h2><p className="mt-1 text-xs text-muted-foreground">{t("portfolio.history.hint")}</p></div>

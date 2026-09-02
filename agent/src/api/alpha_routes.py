@@ -778,6 +778,7 @@ def _result_for_wire(result: dict[str, Any]) -> dict[str, Any]:
         "by_theme",
         "n_alphas_tested",
         "meta",
+        "skip_reason_summary",
     )
     for k in keep:
         if k in result:

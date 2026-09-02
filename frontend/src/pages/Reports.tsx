@@ -205,17 +205,17 @@ function ReportRow({ run }: { run: RunListItem }) {
   return (
     <article className="rounded-md border p-4 transition hover:border-primary/40 hover:bg-muted/30">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 space-y-2">
+        <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={run.status} />
             <Link to={`/runs/${run.run_id}`} className="truncate font-mono text-sm font-medium hover:text-primary">
               {run.run_id}
             </Link>
-            <span className="text-xs text-muted-foreground">
+            <span className="shrink-0 text-xs text-muted-foreground">
               {formatRunDate(run.created_at, t("reports.unknown", { defaultValue: "Unknown" }))}
             </span>
           </div>
-          <p className="line-clamp-2 text-sm text-muted-foreground">{run.prompt || t("reports.noPrompt")}</p>
+          <p className="line-clamp-2 break-words text-sm text-muted-foreground">{run.prompt || t("reports.noPrompt")}</p>
           <div className="flex flex-wrap gap-1.5">
             {(run.codes || []).slice(0, 6).map((code) => (
               <span key={code} className="rounded border px-2 py-0.5 font-mono text-xs text-muted-foreground">
@@ -230,12 +230,12 @@ function ReportRow({ run }: { run: RunListItem }) {
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 lg:items-end">
-          <div className="grid grid-cols-2 gap-2 text-end sm:flex sm:flex-wrap sm:justify-end">
+        <div className="flex w-full shrink-0 flex-col gap-3 sm:w-auto lg:min-w-[220px] lg:items-end">
+          <div className="grid shrink-0 grid-cols-2 gap-2 text-end">
             <MetricPill label={t("reports.return")} value={formatOptionalMetric("total_return", run.total_return)} />
             <MetricPill label={t("reports.sharpe")} value={formatOptionalMetric("sharpe", run.sharpe)} />
           </div>
-          <div className="flex flex-wrap gap-2 lg:justify-end">
+          <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
             <Link
               to={`/runs/${run.run_id}`}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:opacity-90"
@@ -275,7 +275,7 @@ function StatusBadge({ status }: { status: string }) {
 
 function MetricPill({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border px-3 py-1.5">
+    <div className="min-w-[96px] rounded-md border px-3 py-1.5">
       <div className="text-[11px] uppercase text-muted-foreground">{label}</div>
       <div className="font-mono text-sm font-medium">{value}</div>
     </div>
