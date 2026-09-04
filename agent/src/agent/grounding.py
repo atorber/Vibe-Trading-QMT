@@ -451,10 +451,12 @@ _PROSPECTIVE_LEVEL_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-# Full-width brackets and enumeration commas delimit prose clauses. ASCII
-# parentheses are deliberately not separators: an explicit derivation such as
-# "(8.5 - 7.9) / 2" must stay in one segment for the formula check.
-_CLAUSE_SEPARATOR_RE = re.compile(r"[,，;；。、\n（）【】]")
+# Full-width enumeration commas delimit prose clauses. Paired brackets (ASCII
+# or full-width ()()[]) are deliberately not separators: an explicit
+# derivation such as "(8.5 - 7.9) / 2" must stay in one segment for the
+# formula check, and 公司名（代码）价格 must stay in one segment so the
+# unsourced-symbol gate can see the symbol with its figure (#1260).
+_CLAUSE_SEPARATOR_RE = re.compile(r"[,，;；。、\n]")
 
 
 # The ASCII comma both separates clauses and groups thousands, and the clause
@@ -1967,8 +1969,9 @@ class GroundingLedger:
             )
         source = str(payload.get("source") or tool_name)
         remaining = _MAX_GENERIC_EVIDENCE
+        timestamp_fields = (*_TIMESTAMP_FIELDS, "as_of")
 
-        def visit(value: Any, path: str) -> None:
+        def visit(value: Any, path: str, timestamp: str | None = None) -> None:
             nonlocal remaining
             if remaining <= 0:
                 return
@@ -1979,7 +1982,7 @@ class GroundingLedger:
                         tool=tool_name,
                         symbol=symbol,
                         source=source,
-                        timestamp=None,
+                        timestamp=timestamp,
                         field=path or "value",
                         value=value,
                         status="observed",
@@ -1990,11 +1993,25 @@ class GroundingLedger:
                 remaining -= 1
                 return
             if isinstance(value, dict):
+                local_timestamp = next(
+                    (
+                        str(value[key])
+                        for key in timestamp_fields
+                        if value.get(key) is not None
+                    ),
+                    timestamp,
+                )
                 for key, item in value.items():
-                    visit(item, f"{path}.{key}" if path else str(key))
+                    if str(key).casefold() in timestamp_fields:
+                        continue
+                    visit(
+                        item,
+                        f"{path}.{key}" if path else str(key),
+                        local_timestamp,
+                    )
             elif isinstance(value, list):
                 for index, item in enumerate(value):
-                    visit(item, f"{path}[{index}]")
+                    visit(item, f"{path}[{index}]", timestamp)
 
         visit(payload, "")
 
