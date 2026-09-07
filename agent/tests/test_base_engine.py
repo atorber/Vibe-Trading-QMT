@@ -309,25 +309,116 @@ def test_existing_rebalance_does_not_churn_inside_slippage_band(direction):
     _assert_unchanged(engine, {"A": before})
 
 
-def test_rebalance_insufficient_capital_is_atomic():
+def test_rebalance_overcommitted_single_basket_scales_instead_of_aborting():
+    """#1274: 100% target plus commission scales the basket, not abort."""
     engine = _AdjustmentEngine(fee_rate=0.10)
-    with pytest.raises(ValueError, match="insufficient capital"):
-        _run_adjustments(engine, {"A": [1.0]})
-    _assert_unchanged(engine)
+    _run_adjustments(engine, {"A": [1.0]})
+
+    position = engine.bar_positions[0]["A"]
+    assert position.size == pytest.approx(10.0 * 1000.0 / 1100.0, rel=1e-3)
+    assert engine.bar_capitals[0] >= 0.0
 
 
-def test_existing_multi_symbol_rebalance_failure_is_atomic():
+def test_rebalance_basket_with_commission_scales_to_fit():
+    """#1274: a 100% target basket plus fees fills proportionally scaled."""
+    engine = _AdjustmentEngine(fee_rate=0.001)
+    _run_adjustments(engine, {"A": [0.60], "B": [0.40]})
+
+    sizes = _sizes(engine.bar_positions[0])
+    # One common scale factor: each sleeve keeps its share of the portfolio.
+    assert sizes["A"] == pytest.approx(6.0 * 1000.0 / 1001.0, rel=1e-3)
+    assert sizes["A"] / sizes["B"] == pytest.approx(0.60 / 0.40, rel=1e-4)
+    assert 0.0 <= engine.bar_capitals[0] < 0.01
+
+
+def test_rebalance_scaled_basket_is_independent_of_input_code_order():
+    """#1274: scaling preserves the fairness contract of the open path."""
+
+    class _FeeAdjustmentEngine(_AdjustmentEngine):
+        def __init__(self):
+            super().__init__(fee_rate=0.001)
+
+    first, second = _run_both_code_orders(_FeeAdjustmentEngine, {"A": [0.60], "B": [0.40]})
+    assert first.bar_positions == second.bar_positions
+    assert first.bar_capitals == second.bar_capitals
+
+
+def test_rebalance_scaled_sizes_keep_weights_with_differing_fees():
+    """#1274: one common size factor — per-symbol fees must not re-weight.
+
+    A cost-weighted per-order scale would keep the 60/40 *spend* split while
+    distorting sizes. Sizes must stay near the 1.5 ratio, and each symbol
+    must be rounded and commissioned under its own rules while scaling —
+    a stale active symbol would charge B's 2% fee on A's fill.
+    """
+
+    class _SymbolFeeAdjustmentEngine(_AdjustmentEngine):
+        def round_size(self, raw_size, price):
+            lot = {"A": 0.05, "B": 0.05}[self._active_symbol]
+            return round(max(raw_size, 0.0) / lot) * lot
+
+        def calc_commission(self, size, price, direction, is_open):
+            rate = {"A": 0.01, "B": 0.02}[self._active_symbol]
+            return size * price * rate
+
+    engine = _SymbolFeeAdjustmentEngine(fee_rate=0.0)
+    _run_adjustments(
+        engine,
+        {"A": [0.60], "B": [0.40]},
+        execution_prices={"A": [100.0], "B": [80.0]},
+    )
+
+    positions = engine.bar_positions[0]
+    sizes = _sizes(positions)
+    # Proportions live in NOTIONAL space (A@100 vs B@80 → share ratio 1.2);
+    # fine lots (0.5% of each fill) keep the assertion meaningful.
+    assert sizes["A"] / sizes["B"] == pytest.approx(1.2, rel=2e-2)
+    notionals = (sizes["A"] * 100.0, sizes["B"] * 80.0)
+    assert notionals[0] / sum(notionals) == pytest.approx(0.60, rel=2e-2)
+    # Each fill commissioned under its OWN symbol's schedule.
+    assert positions["A"].entry_commission == pytest.approx(
+        sizes["A"] * 100.0 * 0.01
+    )
+    assert positions["B"].entry_commission == pytest.approx(
+        sizes["B"] * 80.0 * 0.02
+    )
+    assert engine.bar_capitals[0] >= 0.0
+
+
+def test_rebalance_reduction_commits_and_increase_scales_to_fit():
+    """#1274: reductions commit as planned; the open sleeve scales to fit."""
     engine = _AdjustmentEngine(fee_rate=0.01)
+    _run_adjustments(engine, {"A": [0.25, 0.10], "B": [0.25, 0.90]})
 
+    first, second = engine.bar_positions
+    assert _sizes(first) == {"A": 2.5, "B": 2.5}
+    assert engine.bar_capitals[0] == 495.0
+    assert _sizes(second)["A"] == pytest.approx(0.995)  # 10% of bar-2 equity 995
+    # B's increase is scaled by the one common factor to fit capital.
+    assert 2.5 < _sizes(second)["B"] < 9.0
+    assert engine.bar_capitals[1] >= 0.0
+
+
+def test_rebalance_irrecoverably_infeasible_basket_fails_atomically():
+    """#1274: when no scale fits — not even an empty open sleeve — abort."""
+    engine = _AdjustmentEngine()
     with pytest.raises(ValueError, match="insufficient capital"):
-        _run_adjustments(engine, {"A": [0.25, 0.10], "B": [0.25, 0.90]})
-
-    assert engine.capital == engine.bar_capitals[0] == 495.0
-    assert engine.positions == engine.bar_positions[0]
+        _run_adjustments(
+            engine,
+            {"A": [-0.50, 0.0]},
+            execution_prices={"A": [100.0, 1000.0]},
+        )
+    # Bar 1's short is intact; the unrecoverable close released negative
+    # capital no scaling of opens (there are none) could repair. The abort
+    # committed nothing: exactly bar 1's fill exists, no bar-2 artifacts.
+    assert engine.capital == 500.0
+    position = engine.positions["A"]
+    assert (position.direction, position.size) == (-1, 5.0)
+    # Opens don't append trade records or adjustment events; the abort
+    # committed no close.
     assert engine.trades == []
     assert engine.adjustment_events == []
     assert len(engine.bar_positions) == 1
-
 
 @pytest.mark.parametrize(
     ("target_weight", "expected_position", "bar_capital", "trade_fees"),
@@ -819,3 +910,19 @@ def test_halted_position_marks_at_last_close_past_ffill_limit():
     # The terminal forced liquidation also marks at the last traded close, so
     # the halt's unrealized PnL survives into the final equity.
     assert engine.equity_snapshots[-1].equity == pytest.approx(marked_at_last_close, rel=1e-6)
+
+
+def test_rebalance_scaled_away_sleeve_is_recorded_as_plan_rejection():
+    """#1274: a sleeve rounded to zero by scaling leaves an audit record.
+
+    A fills 9 of its 10 target shares; B's one-lot fill scales below one lot
+    and vanishes — run-card diagnostics must see it as a zero_size rejection,
+    not silence.
+    """
+    engine = _SymbolRulesAdjustmentEngine()
+    _run_adjustments(engine, {"A": [1.0], "B": [0.003]})
+
+    sizes = _sizes(engine.bar_positions[0])
+    assert sizes == {"A": 9.0}  # scaled to fit; B's leg dropped entirely
+    assert engine.plan_rejections[("B", "zero_size")] == 1
+    assert engine.bar_capitals[0] >= 0.0

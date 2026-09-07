@@ -20,6 +20,7 @@ from src.trading.connectors.tiger.profiles import TIGER_PROFILES
 from src.trading.connectors.etoro.profiles import ETORO_PROFILES
 from src.trading.connectors.qmt.profiles import QMT_PROFILES
 from src.trading.connectors.trading212.profiles import TRADING212_PROFILES
+from src.trading.connectors.zerodha.profiles import ZERODHA_PROFILES
 from src.trading.types import TradingProfile
 
 CONFIG_FILENAME = "trading-connections.json"
@@ -40,6 +41,7 @@ BUILTIN_PROFILES: tuple[TradingProfile, ...] = (
     *MT5_PROFILES,
     *ETORO_PROFILES,
     *QMT_PROFILES,
+    *ZERODHA_PROFILES,
 )
 
 

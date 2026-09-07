@@ -112,14 +112,25 @@ def _run_card_data_sources(config: Dict[str, Any], loader: Any) -> List[str]:
 # ─── Market detection (lightweight, for signal alignment only) ───
 
 _CRYPTO_RE = _re.compile(r"^[A-Z]+-USDT$|^[A-Z]+/USDT$", _re.I)
-_FOREX_RE = _re.compile(r"^[A-Z]{3}/[A-Z]{3}$|^[A-Z]{6}\.FX$")
+# Forex / metals in their explicit Yahoo notations, plus the bare-6-char
+# whitelist for XAUUSD / XAGUSD / XPTUSD / XPDUSD and G10 currencies. Mirrors
+# ``backtest.engines._market_hooks._MARKET_PATTERNS`` so the ffill-limit
+# decision (``10`` for cross-market vs ``5`` for single-market) reflects the
+# same market classification the engine composite would assign.
+_FX_RE = _re.compile(
+    r"^[A-Z]{3}/[A-Z]{3}$"
+    r"|^[A-Z]{6}\.FX$"
+    r"|^[A-Z]{6}=X$"
+    r"|^(?:XAU|XAG|XPT|XPD|EUR|GBP|JPY|CHF|CAD|AUD|NZD|USD)[A-Z]{3}$",
+    _re.I,
+)
 
 
 def _detect_market_for_align(code: str) -> str:
     """Lightweight market detection for ffill_limit calculation."""
     if _CRYPTO_RE.match(code):
         return "crypto"
-    if _FOREX_RE.match(code):
+    if _FX_RE.match(code):
         return "forex"
     return "equity"
 
@@ -1686,7 +1697,10 @@ class BaseEngine(ABC):
         )
         self._validate_rebalance_values(projected_capital)
         if projected_capital < -1e-9:
-            raise ValueError("insufficient capital for position rebalance")
+            fitted = self._fit_rebalance_opens(opens, reductions, ts)
+            if fitted is None:
+                raise ValueError("insufficient capital for position rebalance")
+            opens = fitted
 
         for order in reductions:
             if order.target_size <= 1e-9:
@@ -1698,6 +1712,94 @@ class BaseEngine(ABC):
                 self._execute_position_increase(order, ts)
             else:
                 self._execute_open_order(order, ts)
+
+    def _fit_rebalance_opens(
+        self,
+        opens: list[_OpenOrder],
+        reductions: list[_ReductionOrder],
+        ts: pd.Timestamp,
+    ) -> Optional[list[_OpenOrder]]:
+        """Scale the open sleeve by one common factor so the basket fits.
+
+        #1274: a fully invested target basket plus commission overdrafts by a
+        hair and used to abort atomically. Instead, mirror the open-basket
+        path's fairness behavior: reductions commit as planned (they release
+        capital toward the targets), and every capital-consuming sleeve —
+        fresh opens and same-direction increases alike — scales by one common
+        factor, preserving portfolio proportions on sizes/notionals (post-fee
+        capital weights shift by each sleeve's fee, as with the open path).
+        Sizes re-round per market lot rules; a sleeve whose rounded size hits
+        zero is dropped and recorded via ``_on_plan_rejected`` as
+        ``zero_size`` — the same record a too-small plan gets in the open
+        path — so run-card diagnostics see the dropped leg.
+
+        Returns the fitted orders, or ``None`` when no scale fits — not even
+        an empty open sleeve — which the caller must treat as an atomic
+        abort (nothing has been committed at that point).
+        """
+        released = sum(order.capital_credit for order in reductions)
+
+        def _fits(candidate: list[_OpenOrder]) -> bool:
+            projected = self.capital + released - sum(order.cost for order in candidate)
+            self._validate_rebalance_values(projected)
+            return projected >= -1e-9
+
+        def _at_scale(scale: float) -> list[_OpenOrder]:
+            scaled: list[_OpenOrder] = []
+            for order in opens:
+                # round_size/calc_commission dispatch on the active symbol
+                # (lot grids, per-symbol fee schedules) — same contract as
+                # _plan_open_order.
+                self._active_symbol = order.symbol
+                size = self.round_size(order.size * scale, order.price)
+                if size <= 0:
+                    continue
+                candidate = _OpenOrder(
+                    symbol=order.symbol,
+                    direction=order.direction,
+                    price=order.price,
+                    size=size,
+                    leverage=order.leverage,
+                    margin=self._calc_margin(
+                        order.symbol, size, order.price, order.leverage
+                    ),
+                    commission=self.calc_commission(
+                        size, order.price, order.direction, is_open=True
+                    ),
+                )
+                self._validate_rebalance_values(
+                    candidate.price,
+                    candidate.leverage,
+                    candidate.size,
+                    candidate.margin,
+                    candidate.commission,
+                )
+                scaled.append(candidate)
+            return scaled
+
+        fitted: Optional[list[_OpenOrder]] = None
+        low, high = 0.0, 1.0
+        for _ in range(50):
+            mid = (low + high) / 2.0
+            candidate = _at_scale(mid)
+            if _fits(candidate):
+                low, fitted = mid, candidate
+            else:
+                high = mid
+        if fitted is not None and len(fitted) < len(opens):
+            dropped_symbols = sorted(
+                {order.symbol for order in opens}
+                - {order.symbol for order in fitted}
+            )
+            for symbol in dropped_symbols:
+                self._on_plan_rejected(symbol, "zero_size", ts)
+            logger.warning(
+                "Rebalance basket scaled to fit capital; sleeves rounded to "
+                "zero and dropped: %s. Set position_adjustment='hold' or "
+                "reduce targets if these fills are required.",
+                ", ".join(dropped_symbols),
+            )
+        return fitted
 
     @staticmethod
     def _validate_rebalance_values(*values: float, positive: bool = False) -> None:

@@ -82,7 +82,7 @@ py-modules = ["api_server", "mcp_server"]
 
 [tool.setuptools.packages.find]
 where = ["agent"]
-include = ["src*", "backtest*", "cli*"]
+include = ["src*", "backtest*", "cli*", "evals*"]
 
 [tool.setuptools.package-data]
 "src" = [
@@ -97,6 +97,7 @@ include = ["src*", "backtest*", "cli*"]
     "shadow_account/templates/*.html",
     "shadow_account/templates/*.css",
 ]
+"evals.harness" = ["README.md", "cases/**/*.json"]
 "backtest" = ["*.py"]
 "src.factors" = ["zoo/**/*.yaml", "zoo/**/*.md", "zoo/**/NOTICE"]
 
@@ -112,6 +113,12 @@ mt5 = [
     # (broker connector + mt5 data loader). Lazy-imported; on other platforms
     # the marker makes this a no-op and everything degrades gracefully.
     "MetaTrader5>=5.0.45; sys_platform == 'win32'",
+]
+zerodha = [
+    # Zerodha Kite Connect (India NSE/BSE) broker connector + india_broker
+    # loader backend. Lazy-imported with a named error; zerodha_available()
+    # stays False (loader falls through to Shoonya/Dhan) until installed.
+    "kiteconnect>=4.0.0",
 ]
 deepseek = [
     "langchain-deepseek>=1.0.0,<2",

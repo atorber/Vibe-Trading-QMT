@@ -37,6 +37,7 @@ from src.trading.connectors.tiger.classification import TIGER_TOOL_CLASS
 from src.trading.connectors.etoro.classification import ETORO_TOOL_CLASS
 from src.trading.connectors.qmt.classification import QMT_TOOL_CLASS
 from src.trading.connectors.trading212.classification import TRADING212_TOOL_CLASS
+from src.trading.connectors.zerodha.classification import ZERODHA_TOOL_CLASS
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ _BROKER_CURATED_MAPS = {
     "mt5": MT5_TOOL_CLASS,
     "etoro": ETORO_TOOL_CLASS,
     "qmt": QMT_TOOL_CLASS,
+    "zerodha": ZERODHA_TOOL_CLASS,
 }
 
 

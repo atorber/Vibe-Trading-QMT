@@ -131,11 +131,7 @@ def _lock_token_file(handle: Any) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         return
     if msvcrt is not None:  # pragma: no cover - exercised with a platform mock.
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
-            os.fsync(handle.fileno())
+        # Lock byte 0 beyond EOF without writing a sentinel byte (see ledger.py).
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
         return
@@ -234,6 +230,8 @@ class CodexAIMessage:
             "finish_reason",
             self.response_metadata.get("finish_reason", "stop"),
         )
+        response_metadata = {**self.response_metadata, **other.response_metadata}
+        response_metadata["finish_reason"] = finish_reason
         reasoning = self.additional_kwargs.get("reasoning_content", "") + other.additional_kwargs.get(
             "reasoning_content", ""
         )
@@ -241,7 +239,7 @@ class CodexAIMessage:
             content=(self.content or "") + (other.content or ""),
             tool_calls=[*self.tool_calls, *other.tool_calls],
             additional_kwargs={"reasoning_content": reasoning} if reasoning else {},
-            response_metadata={"finish_reason": finish_reason},
+            response_metadata=response_metadata,
             usage_metadata=other.usage_metadata or self.usage_metadata,
         )
 
@@ -599,6 +597,10 @@ def _message_chunks_from_events(events: Iterable[dict[str, Any]]) -> Iterable[Co
         elif event_type == "response.completed":
             response = event.get("response") or {}
             status = response.get("status")
+            response_metadata = {"finish_reason": _map_finish_reason(status)}
+            model = response.get("model")
+            if isinstance(model, str) and model.strip():
+                response_metadata["model_name"] = model.strip()
             usage = response.get("usage")
             usage_metadata = None
             if isinstance(usage, dict):
@@ -609,7 +611,7 @@ def _message_chunks_from_events(events: Iterable[dict[str, Any]]) -> Iterable[Co
                 if all(isinstance(value, int) and not isinstance(value, bool) for value in values.values()):
                     usage_metadata = values
             yield CodexAIMessage(
-                response_metadata={"finish_reason": _map_finish_reason(status)},
+                response_metadata=response_metadata,
                 usage_metadata=usage_metadata,
             )
         elif event_type in {"error", "response.failed"}:
