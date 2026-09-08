@@ -13,6 +13,7 @@ from src.agent.context import ContextBuilder
 from src.agent.grounding import (
     GroundingLedger,
     _infer_currency,
+    _infer_instrument_type,
     _infer_venue,
     _JOINED_CRYPTO_RE,
     _normalize_symbol,
@@ -630,6 +631,56 @@ def test_explicit_symbol_and_resolver_suffix_alias_are_one_identity(
     assert ledger.identity_status == "locked"
     assert ledger.authorized_symbols == {"562500.SH"}
     assert authorization.allowed is True
+
+
+@pytest.mark.parametrize(
+    ("symbol", "expected_venue", "expected_type"),
+    [
+        # Spot gold: bare 6-letter, dashed, slashed, Yahoo forex notation.
+        # Before this fix, the shape-based fallback in _infer_venue / _infer_instrument_type
+        # mis-classified any dashed / slashed symbol as crypto_or_fx / crypto.
+        ("XAUUSD", "forex", "forex"),
+        ("XAU-USD", "forex", "forex"),
+        ("XAU/USD", "forex", "forex"),
+        ("XAUUSD=X", "forex", "forex"),
+        # COMEX gold futures via Yahoo continuous-front-month notation.
+        ("GC=F", "futures", "future"),
+        # Tokenized gold stays crypto.
+        ("XAUT-USDT", "crypto_or_fx", "crypto"),
+        ("PAXG-USDT", "crypto_or_fx", "crypto"),
+        # Regression: existing crypto / US equity behavior unchanged.
+        ("BTC-USDT", "crypto_or_fx", "crypto"),
+        ("GLD", None, "listed_security"),
+        ("AAPL.US", "us", "listed_security"),
+    ],
+)
+def test_runtime_registry_classifies_gold_fx_futures_consistently(
+    symbol, expected_venue, expected_type
+) -> None:
+    """The runtime registry must agree with the engine classifier for gold / FX / futures.
+
+    PR #1280 added the metal/FX/futures patterns to the engine
+    ``_MARKET_PATTERNS`` and the correlation helper. This test pins the
+    third copy (the shape-based fallback in
+    ``_infer_venue`` / ``_infer_instrument_type``) to the same
+    whitelist. Without this, a bare ``XAUUSD`` query would surface in
+    the registry as ``venue=None, type=listed_security`` and a dashed
+    ``XAU-USD`` would surface as ``venue=crypto_or_fx, type=crypto``,
+    contradicting the engine's actual classification. The user observed
+    this exact runtime state in the agent before the fix.
+    """
+    assert _infer_venue(symbol) == expected_venue
+    assert _infer_instrument_type(symbol) == expected_type
+    # Quote currency is non-None only for dashed / slashed shapes.
+    if "-" in symbol or "/" in symbol:
+        # Whitelist-based ``USD`` leg: only metals/FX/forex (not crypto).
+        if symbol.endswith("-USD") and symbol not in {"XAUT-USD", "PAXG-USD"}:
+            assert _infer_currency(symbol) == "USD"
+        # Otherwise the trailing 3-5 letter leg is the quote currency.
+        elif symbol.endswith("-USDT") or symbol.endswith("-USDC") or \
+             symbol.endswith("-BUSD") or symbol.endswith("-TUSD") or \
+             symbol.endswith("-FDUSD"):
+            assert _infer_currency(symbol) in {"USDT", "USDC", "BUSD", "TUSD", "FDUSD"}
 
 
 def test_resolver_answering_a_different_venue_is_still_conflicting(
@@ -1351,6 +1402,97 @@ def test_price_validation_ignores_score_indicator_and_window_digits(
     ):
         result = ledger.validate_final_answer(draft)
         assert result.valid is True, (draft, result.issues)
+
+
+def test_price_validation_ignores_formula_variable_digits(tmp_path: Path) -> None:
+    """A price word used as a formula variable is not an asserted price (#1354).
+
+    The gate uses one structural rule, not a catalogue of phrasings: a number
+    after a price word is a claimed value only when nothing formula-like sits
+    between them. A closed marker set — comparison/division operators or an
+    indicator identifier followed by digits — marks the number an operand; an
+    observation binder ("was", "at", 报收/收于/…) after that marker re-attaches it
+    to the price word, so "close above SMA50 and was 2500" stays a claim while
+    "close/SMA50 > 1" claims nothing. An ASCII sentence boundary (" . ") ends
+    the price word's reach, so a bare year two sentences later is not claimed.
+    """
+    ledger = _screened_ledger(tmp_path)
+
+    for draft in (
+        # Division + comparison: window and threshold, not a price.
+        "000543.SZ close/SMA50 > 1 时买入（source: tencent）",
+        # Signal value after a signal word / arrow / 触发.
+        "000543.SZ close acima da EMA30 dispara sinal +1（source: tencent）",
+        "000543.SZ close above EMA20 -> +1（source: tencent）",
+        "000543.SZ 收盘价上穿MA20 触发 +1 信号（source: tencent）",
+        # Plain comparison against a level, not a quote.
+        "000543.SZ close > 1 时买入（source: tencent）",
+        # Indicator reading with a directional connective.
+        "000543.SZ close/SMA50 > 1 and RSI below 30（source: tencent）",
+        # Colon after the signal word (ASCII '.' is not a clause separator,
+        # so "Sinal: +1" can share a clause with the price word).
+        "000543.SZ close acima da EMA30. Sinal: +1（source: tencent）",
+        # Indicator identifier + digits between the price word and the number,
+        # even when the operator is spelled out in prose.
+        "000543.SZ close vs SMA20 maior que 1（source: tencent）",
+        "000543.SZ close minus SMA20 fallen below 0（source: tencent）",
+    ):
+        result = ledger.validate_final_answer(draft)
+        assert result.valid is True, (draft, result.issues)
+
+    # Strict-narrowing bar: the formula language must not launder an observed
+    # value. Verified adversarially; each shape stays a claim.
+    for launder in (
+        # no operator, no indicator digits: the plain claim
+        "000543.SZ close was 2500（source: tencent）",
+        # digit-carrying connector bridging to an indicator
+        "000543.SZ close was 2500 and SMA50 2450（source: tencent）",
+        # observation verb trailing the formula in the same clause
+        "000543.SZ close above SMA50 and was 2500 yesterday（source: tencent）",
+        # at-attached level trailing the formula
+        "000543.SZ close above SMA50 at 2450（source: tencent）",
+        # equality claim, not a formula
+        "000543.SZ close = 2500（source: tencent）",
+        # second price word after a comma stays gated
+        "000543.SZ close above SMA50, and closed at 2500 yesterday（source: tencent）",
+        # Chinese observation syntax
+        "000543.SZ 收盘价报收 2500（source: tencent）",
+        # multi-digit value after a signal word is a price, not a signal
+        "000543.SZ close signal 2500（source: tencent）",
+        # "above" with a price word is a claim, not an indicator reading
+        "000543.SZ close above 2500（source: tencent）",
+    ):
+        result = ledger.validate_final_answer(launder)
+        assert result.valid is False, launder
+        assert "numeric_claim_conflict" in {issue["code"] for issue in result.issues}
+
+
+def test_direct_price_values_structural_rule() -> None:
+    """The structural rule decides operand vs. claim at the number level (#1354)."""
+    extract = GroundingLedger._direct_price_values
+    # Formula operands — a marker between the price word and the number.
+    for text in (
+        "close/SMA50 > 1.0",
+        "close acima da EMA30 dispara sinal +1",
+        "收盘价上穿MA20 触发 +1 信号",
+        "close/SMA50 > 1 and RSI below 30",
+        "close vs SMA20 maior que 1",
+        "close minus SMA20 fallen below 0",
+        # CJK-adjacent indicator (no ASCII space): the marker's \b must not
+        # treat a CJK letter as a word character, or 上穿MA20 is invisible.
+        "收盘价上穿SMA20 2500",
+    ):
+        assert extract(text) == [], text
+    # Observed values — no marker, or an observation binder after the marker.
+    assert extract("close was 2500") == [2500.0]
+    assert extract("close above 2500") == [2500.0]
+    assert extract("close = 2500") == [2500.0]
+    assert extract("close above SMA50 and was 2500 yesterday") == [2500.0]
+    assert extract("close above SMA50 at 2450") == [2450.0]
+    assert extract("收盘价报收 2500") == [2500.0]
+    # Sentence boundary: the price word cannot reach a later sentence.
+    assert extract("close was 210. In 2024 the market rallied") == [210.0]
+    assert extract("close. Sinal: 2500") == []
 
 
 def test_price_validation_ignores_short_dates_and_percent_ranges(
@@ -3464,3 +3606,166 @@ def test_derived_return_exemption_is_structural_not_phrasal(tmp_path: Path) -> N
         "AAPL.US 从 100.0 涨到 112.4，区间收益率为 15.0%。",
     ):
         assert verdict(answer) is True, f"unanchored/wrong return accepted: {answer}"
+def test_generic_header_table_metric_rows_are_gated(tmp_path: Path) -> None:
+    """#1336 must not be dodgeable by formatting the claim as a generic-header
+    table (| 指标 | 数值 | / | Metric | Value |) with the metric kind in the
+    row instead of prose or a metric-headed table."""
+    ledger = GroundingLedger(run_dir=tmp_path, user_message="回测策略")
+
+    result = ledger.validate_final_answer(
+        "| 指标 | 数值 |\n|---|---:|\n| 年化收益 | 18.2% |\n| 最大回撤 | -9.4% |"
+    )
+
+    assert result.valid is False, result.issues
+    assert [
+        i for i in result.issues if i.get("code") == "analysis_claim_unavailable"
+    ]
+
+    # a comparison marker must not launder an unsupported figure through a
+    # metric-headed table either: prose rejects "夏普比率 > 1.5。" without
+    # evidence, so the table form must be rejected too
+    result = ledger.validate_final_answer("| 夏普比率 |\n|---|---|\n| > 1.5 |")
+    assert result.valid is False, result.issues
+
+    # value-first layout (kind in a later cell) is gated too
+    result = ledger.validate_final_answer(
+        "| 数值 | 指标 |\n|---|---|\n| 18.2% | 年化收益率 |"
+    )
+    assert result.valid is False, result.issues
+    # the bare fragment the prose detector treats as a metric word is gated
+    result = ledger.validate_final_answer(
+        "| 指标 | 数值 |\n|---|---|\n| 年化 | 18.2% |"
+    )
+    assert result.valid is False, result.issues
+    # multiple (label, value) pairs in one row are each gated with their own kind
+    result = ledger.validate_final_answer(
+        "| 指标 | 数值 | 指标 | 数值 |\n|---|---|---|---|\n| 年化波动率 | 18.2% | 最大回撤 | -9.4% |"
+    )
+    assert result.valid is False, result.issues
+    assert len([i for i in result.issues if i.get("code") == "analysis_claim_unavailable"]) == 2
+
+
+def test_generic_header_table_matches_prose_verdicts(tmp_path: Path) -> None:
+    """The generic-header fallback must produce the SAME verdict as prose for
+    the same claim — never looser (formatting dodge) and never stricter.
+
+    Prose without evidence rejects comparison phrasing ("最大回撤小于 -5%
+    触发风控。"), rejects the definitional frame split across the number
+    ("夏普比率通常大于1.0认为较好。"), and rejects a bare claim; with
+    kind-matched evidence all of them pass. Tables must do exactly that.
+    """
+    bare = GroundingLedger(run_dir=tmp_path / "bare", user_message="回测策略")
+    # comparison phrasing rejected without evidence, like prose
+    assert bare.validate_final_answer(
+        "| 指标 | 标准 |\n|---|---|\n| 最大回撤 | 小于 -5% 触发风控 |"
+    ).valid is False
+    # definitional frame split by the number: prose rejects it, tables must not
+    # be looser than prose or the split becomes the new formatting dodge
+    assert bare.validate_final_answer(
+        "| 指标 | 备注 |\n|---|---|\n| 夏普比率 | 通常大于1.0认为较好 |"
+    ).valid is False
+    # a label cell smuggling its own measurement is prose-identical to
+    # "年化收益率为 18.2%" — rejected
+    assert bare.validate_final_answer(
+        "| 指标 | 数值 |\n|---|---|\n| 年化收益率 18.2% | - |"
+    ).valid is False
+
+    backed = GroundingLedger(run_dir=tmp_path / "backed", user_message="回测策略")
+    backed.ingest_tool_result(
+        tool_name="portfolio_risk_xray",
+        arguments={"symbols": ["AAPL"]},
+        result=json.dumps({"annualized_vol": 0.182, "max_drawdown": -0.05}),
+        call_id="x",
+        success=True,
+    )
+    # value-backed row accepted
+    assert backed.validate_final_answer(
+        "| 指标 | 数值 |\n|---|---:|\n| 年化波动率 | 18.2% |"
+    ).valid is True
+    # the same comparison phrasing passes once the figure is kind-backed
+    assert backed.validate_final_answer(
+        "| 指标 | 标准 |\n|---|---|\n| 最大回撤 | 小于 -5% 触发风控 |"
+    ).valid is True
+    # contiguous definitional frame ("通常认为…") is exempt in prose, so in
+    # tables too — the frame regex is the boundary, not the formatting
+    assert backed.validate_final_answer(
+        "| 指标 | 备注 |\n|---|---|\n| 夏普比率 | 通常认为大于 1.0 较好 |"
+    ).valid is True
+    # an annotation column past the value cell is not attributed to the label:
+    # the prose verdict for "年化波动率 18.2%，较去年提升 2%。" with this evidence
+    # is valid, so the table form must not be stricter (parity).
+    assert backed.validate_final_answer(
+        "| 指标 | 数值 | 备注 |\n|---|---|---|\n| 年化波动率 | 18.2% | 较去年提升 2% |"
+    ).valid is True
+    # a FORECAST frame in the label frames the claimed value clause-wide:
+    # prose "预计夏普比率为 1.2。" and the metric-header path (header_forecast
+    # column skip) both accept; the generic path must not be stricter.
+    assert bare.validate_final_answer(
+        "| 指标 | 数值 |\n|---|---|\n| 预计夏普比率 | 1.2 |"
+    ).valid is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Futu writes the venue as a prefix; every one of them must land on
+        # the same identity the market-data chain uses.
+        ("HK.06693", "06693.HK"),
+        ("HK.00700", "00700.HK"),
+        ("HK.700", "00700.HK"),  # zero-padded like the suffix spelling
+        ("US.AAPL", "AAPL.US"),
+        ("US.BRK-B", "BRK-B.US"),
+        ("SH.600519", "600519.SH"),
+        ("SS.600519", "600519.SH"),  # Yahoo's Shanghai alias folds onto .SH
+        ("SZ.000001", "000001.SZ"),
+        ("BJ.430047", "430047.BJ"),
+        # Negatives: a non-numeric venue code is not a listing (HK.HSI is an
+        # index feed), and the suffix spellings stay untouched.
+        ("HK.HSI", "HK.HSI"),
+        ("06693.HK", "06693.HK"),
+        ("AAPL.US", "AAPL.US"),
+        ("600519.SH", "600519.SH"),
+    ],
+)
+def test_normalize_venue_prefixed_symbols(raw: str, expected: str) -> None:
+    """A Futu-style venue prefix normalizes onto the canonical suffix form."""
+    assert _normalize_symbol(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("分析港股 HK.06693 的走势", {"06693.HK"}),
+        ("持仓 US.AAPL 与 HK.00700", {"AAPL.US", "00700.HK"}),
+        ("对比 SH.600519 和 SZ.000001", {"600519.SH", "000001.SZ"}),
+        # Negatives: prose and URLs must not become symbols. The US branch is
+        # case-sensitive precisely so a "…/us.reuters/…" host cannot.
+        ("Revenue grew in the US. Apple led the pack.", set()),
+        ("Listed in the U.S. AAPL is the largest.", set()),
+        ("see https://example.com/us.quotes for details", set()),
+    ],
+)
+def test_scan_symbols_detects_venue_prefixed_symbols(
+    text: str, expected: set[str]
+) -> None:
+    """A pasted connector code is locked as an identity, prose is not."""
+    assert _scan_symbols(text) == expected
+
+
+def test_crypto_pair_tables_match_the_resolver() -> None:
+    """The grounding copies of the crypto pair tables must not drift.
+
+    ``src.tools.symbol_search_tool`` is the resolver; it imports this module,
+    so the tables are duplicated rather than shared. A venue inferred here
+    that disagrees with the identity the resolver locks is a contradictory
+    identity, which outranks every later lock and blocks all market tools —
+    so the duplication needs a guard, not a comment.
+    """
+    from src.agent import grounding as g
+    from src.tools import symbol_search_tool as ss
+
+    assert set(g._CRYPTO_USD_BASES) == set(ss._CRYPTO_USD_BASES)
+    # ``USD`` is the one quote the resolver accepts that is ambiguous (spot
+    # gold and forex are quoted in it too); grounding decides it by the base
+    # whitelist instead, so it is the only permitted difference.
+    assert set(g._CRYPTO_QUOTE_ASSETS) | {"USD"} == set(ss._CRYPTO_QUOTE_ASSETS)

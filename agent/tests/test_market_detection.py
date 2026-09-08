@@ -123,6 +123,22 @@ class TestDetectMarket:
         assert _detect_market("123456") == "a_share"
         assert _detect_market("@#$") == "a_share"
 
+    def test_concatenated_crypto_pairs_route_to_crypto(self) -> None:
+        # Separator-less spot pairs (the Binance spelling) used to fall
+        # through every pattern and pick up a_share rules, T+1 and no
+        # shorting on a perpetual. The quote-asset table mirrors the
+        # trade-journal parser.
+        assert _detect_market("BTCUSDT") == "crypto"
+        assert _detect_market("ETHUSDT") == "crypto"
+        assert _detect_market("ETHUSDC") == "crypto"
+        assert _detect_market("DOGEUSDT") == "crypto"
+        assert code_currency("BTCUSDT") == "USD"
+        # Metals and G10 FX end in USD, not a stablecoin quote, and stay forex.
+        assert _detect_market("XAUUSD") == "forex"
+        assert _detect_market("EURUSD") == "forex"
+        # A bare 6-letter code outside every table still hits the default.
+        assert _detect_market("NFLXLI") == "a_share"
+
 
 # ---------------------------------------------------------------------------
 # Issue #986 — bare US tickers must route to the us_equity chain

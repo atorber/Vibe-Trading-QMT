@@ -94,6 +94,43 @@ _CRYPTO_USD_BASES = frozenset(
         "PAXG",
     }
 )
+#: Spot precious metals. Their pairs are shaped exactly like FX (three-letter
+#: base, fiat quote) but the base is not a fiat code, so ``canonical_fx_pair``
+#: rejects them and the crypto resolver must too (``XAU-USD`` is spot gold,
+#: ``XAUT-USDT`` is the token).
+_METAL_CODES = frozenset({"XAU", "XAG", "XPT", "XPD"})
+
+
+def _metal_or_fx_legs(value: str) -> tuple[str, str] | None:
+    """Return the ``(base, quote)`` legs of a spot metal / FX pair query.
+
+    Recognizes every spelling the tool has to reconcile — ``XAUUSD``,
+    ``XAU/USD``, ``XAU-USD``, ``XAUUSD=X`` — so a candidate written in one
+    spelling can be compared with a query written in another.
+
+    Args:
+        value: A query string or a candidate symbol.
+
+    Returns:
+        The uppercased legs when the base is a metal or fiat code and the
+        quote is a fiat code, else ``None``.
+    """
+    clean = str(value or "").strip().upper()
+    if clean.endswith("=X"):
+        clean = clean[:-2]
+    if "-" in clean or "/" in clean:
+        base, _, quote = (
+            clean.partition("-") if "-" in clean else clean.partition("/")
+        )
+    elif len(clean) == 6 and clean.isalpha():
+        base, quote = clean[:3], clean[3:]
+    else:
+        return None
+    if base in (_METAL_CODES | FIAT_CODES) and quote in FIAT_CODES:
+        return base, quote
+    return None
+
+
 _CRYPTO_PAIR_RE = re.compile(
     rf"^([A-Z0-9]{{2,15}})[-/]({'|'.join(_CRYPTO_QUOTE_ASSETS)})$",
     re.IGNORECASE,
@@ -306,6 +343,32 @@ class SymbolSearchTool(BaseTool):
                 for candidate in candidates
                 if _canonical_crypto_pair(str(candidate.get("symbol") or ""))
                 == crypto_pair
+            ]
+        elif _metal_or_fx_legs(query) is not None:
+            # A spot metal / FX pair query (``XAUUSD``, ``XAU/USD``,
+            # ``XAUUSD=X``) is an exact instrument assertion, exactly like the
+            # crypto-pair branch above. Yahoo answers such a query by
+            # free-text similarity, and its top hit for spot gold is a Swedish
+            # Bitcoin ETP (``VALOUR-BTC-0-SEK.ST``) or an Aave token
+            # (``AETHUSDT-USD``) — a wrong instrument that then locks the run's
+            # identity. Keep only candidates naming the same two legs; an
+            # empty candidate list leaves the identity unresolved, which is
+            # the safe failure.
+            query_legs = _metal_or_fx_legs(query)
+            candidates = [
+                candidate
+                for candidate in candidates
+                if _metal_or_fx_legs(str(candidate.get("symbol") or "")) == query_legs
+            ]
+        elif query.strip().upper().endswith("=F"):
+            # Yahoo's continuous-front-month futures notation is likewise an
+            # exact assertion: ``GC=F`` is gold futures, and a near-string hit
+            # is a different contract.
+            candidates = [
+                candidate
+                for candidate in candidates
+                if str(candidate.get("symbol") or "").strip().upper()
+                == query.strip().upper()
             ]
 
         # Canada fail-fast: a Canadian ticker must resolve to the Canadian venue

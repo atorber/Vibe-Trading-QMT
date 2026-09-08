@@ -48,6 +48,12 @@ _MARKET_PATTERNS = [
     # yfinance's native crypto spelling (BTC-USD, ETH-USD). Distinct from
     # USDT pairs only in the quote currency; both belong to CryptoEngine.
     (re.compile(r"^[A-Z]+-USD$", re.I), "crypto"),
+    # Concatenated spot pairs (BTCUSDT, ETHUSDC) with no separator. Same
+    # quote-asset table the trade-journal parser uses; without it these fell
+    # through every pattern and got a_share rules (T+1, no shorting) on a
+    # perpetual. Bare metals/FX (XAUUSD) end in USD, not USDT/USDC/BUSD, so
+    # they still reach the forex whitelist below.
+    (re.compile(r"^[A-Z]{2,}(?:USDT|USDC|BUSD)$", re.I), "crypto"),
     # China futures: product+delivery.exchange (e.g. IF2406.CFFEX, rb2410.SHFE)
     (re.compile(r"^[A-Za-z]{1,2}\d{3,4}\.(ZCE|DCE|SHFE|INE|CFFEX|GFEX)$", re.I), "futures"),
     # Global futures: product+month-code (e.g. ESZ4, CLF25, GCM2025)
@@ -89,8 +95,8 @@ _MARKET_PATTERNS = [
     # Bare US tickers (AAPL, MSFT, SPY, T, ...). Must stay LAST so every
     # suffixed equity / futures / crypto / forex form above wins first.
     # ``{1,5}`` covers every standard US ticker length while 6-char bare
-    # forex/metals (now caught by the whitelist above) and longer crypto
-    # codes (``BTCUSDT``) fall through to the a_share default.
+    # forex/metals (caught by the whitelist above) and longer unknown codes
+    # fall through to the a_share default.
     (re.compile(r"^[A-Z]{1,5}$", re.I), "us_equity"),
 ]
 
@@ -184,7 +190,8 @@ def _detect_market(code: str) -> str:
         ca_equity/crypto/futures/forex).
         Bare 1-5 letter alphabetic tickers resolve to ``us_equity``;
         bare 6-letter codes that start with a precious-metal or G10
-        currency code (whitelist) resolve to ``forex``; Yahoo's
+        currency code (whitelist) resolve to ``forex``; concatenated
+        crypto pairs (``BTCUSDT``) resolve to ``crypto``; Yahoo's
         ``=F`` (futures) and ``=X`` (forex) notations are recognized;
         any other unknown format defaults to ``a_share``.
     """

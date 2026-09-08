@@ -164,9 +164,14 @@ class TestSymbolIsolation:
                 assert frame["income_total_revenue"].iloc[-1] == 120.0
                 return {"000001.SZ": pd.Series(0.0, index=frame.index)}
 
-        def fake_enrich(data_map, provider, fields_by_table, *, as_of, periods=None):
+        def fake_enrich(
+            data_map, provider, fields_by_table, *, as_of, periods=None, subdaily="reject"
+        ):
             assert fields_by_table == {"income": ["total_revenue"]}
             assert as_of == "2024-04-30"
+            # #1387: the engine forwards the sub-daily PIT policy, and the
+            # default must stay the fail-closed one.
+            assert subdaily == "reject"
             enriched = {code: frame.copy() for code, frame in data_map.items()}
             enriched["000001.SZ"]["income_total_revenue"] = [None, 80.0, 120.0]
             return enriched
