@@ -25,6 +25,9 @@ _SDK_CONNECTOR_MODULES = {
     "dhan": "src.trading.connectors.dhan.sdk",
     "shoonya": "src.trading.connectors.shoonya.sdk",
     "zerodha": "src.trading.connectors.zerodha.sdk",
+    "kis": "src.trading.connectors.kis.sdk",
+    "upbit": "src.trading.connectors.upbit.sdk",
+    "toss": "src.trading.connectors.toss.sdk",
     "trading212": "src.trading.connectors.trading212.sdk",
     "mt5": "src.trading.connectors.mt5.sdk",
     "etoro": "src.trading.connectors.etoro.sdk",
@@ -1456,6 +1459,10 @@ def _remote_tool_name(connector: str, operation: str) -> str | None:
         from src.trading.connectors.robinhood.mcp import remote_tool_name
 
         return remote_tool_name(operation)
+    if connector == "scalable":
+        from src.trading.connectors.scalable.mcp import remote_tool_name
+
+        return remote_tool_name(operation)
     return None
 
 
@@ -1467,6 +1474,10 @@ def _remote_arguments(connector: str, operation: str, arguments: dict[str, Any])
         return remote_arguments(operation, arguments)
     if connector == "robinhood":
         from src.trading.connectors.robinhood.mcp import remote_arguments
+
+        return remote_arguments(operation, arguments)
+    if connector == "scalable":
+        from src.trading.connectors.scalable.mcp import remote_arguments
 
         return remote_arguments(operation, arguments)
     return {}

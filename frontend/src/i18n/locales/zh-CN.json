@@ -126,9 +126,9 @@
     "connectorVerifyFailed": "连接验证失败。",
     "diagnosticCredentialsPartial": "凭证不完整。请配置所有必需变量并重新创建服务。",
     "diagnosticCredentialsConflict": "凭证来源冲突。请仅保留一套完整来源，然后重试。",
-    "diagnosticSdkMissing": "后端服务未安装 Longbridge SDK。",
+    "diagnosticSdkMissing": "后端服务未安装此券商所需的 SDK。",
     "diagnosticAuthenticationFailed": "认证失败。请检查已配置的凭证。",
-    "diagnosticNetworkUnreachable": "无法连接 Longbridge 服务。请检查网络后重试。",
+    "diagnosticNetworkUnreachable": "无法连接券商服务或本地网关。请检查连接地址和网络后重试。",
     "diagnosticBrokerError": "券商拒绝了只读验证请求。请重试或检查后端日志。"
   },
   "scheduled": {
@@ -601,7 +601,8 @@
       "failed": "失败",
       "steps": "{{count}} 个步骤",
       "continue": "继续",
-      "reattach": "重新连接"
+      "reattach": "重新连接",
+      "checkingFigures": "正在核对答案中的数字（第 {{round}} 轮）…"
     },
     "resumeConnector": "恢复连接器",
     "resumeConnectorTitle": "清除熔断开关并恢复连接器活动",
@@ -674,6 +675,8 @@
     "noBacktestSummary": "暂无回测摘要记录。",
     "noReproducibilityHashes": "暂无可复现性哈希记录。",
     "noScalarMetrics": "暂无标量指标记录。",
+    "noStructuredMetrics": "未记录结构化指标。",
+    "structuredMetrics": "结构化指标",
     "noValidationPayload": "暂无验证数据记录。",
     "noArtifactChecksums": "暂无制品校验和记录。",
     "noCodeFiles": "暂无代码文件。",

@@ -147,9 +147,9 @@
     "connectorVerifyFailed": "Connection verification failed.",
     "diagnosticCredentialsPartial": "Credentials are incomplete. Configure all required variables and recreate the service.",
     "diagnosticCredentialsConflict": "Credential sources conflict. Keep one complete source, then retry.",
-    "diagnosticSdkMissing": "The Longbridge SDK is not installed in the backend service.",
+    "diagnosticSdkMissing": "The SDK required by this broker is not installed in the backend service.",
     "diagnosticAuthenticationFailed": "Authentication failed. Check the configured credentials.",
-    "diagnosticNetworkUnreachable": "The Longbridge service is unreachable. Check network access and retry.",
+    "diagnosticNetworkUnreachable": "The broker service or local gateway is unreachable. Check the connection address and network access, then retry.",
     "diagnosticBrokerError": "The broker rejected the read-only verification request. Retry or check backend logs."
   },
   "scheduled": {
@@ -622,7 +622,8 @@
       "failed": "Failed",
       "steps": "{{count}} steps",
       "continue": "Continue",
-      "reattach": "Re-attach"
+      "reattach": "Re-attach",
+      "checkingFigures": "Checking the figures in this answer (round {{round}})…"
     },
     "resumeConnector": "Resume connector",
     "resumeConnectorTitle": "Clear the kill switch and re-enable connector activity",
@@ -695,6 +696,8 @@
     "noBacktestSummary": "No backtest summary recorded.",
     "noReproducibilityHashes": "No reproducibility hashes recorded.",
     "noScalarMetrics": "No scalar metrics recorded.",
+    "noStructuredMetrics": "No structured metrics recorded.",
+    "structuredMetrics": "Structured metrics",
     "noValidationPayload": "No validation payload recorded.",
     "noArtifactChecksums": "No artifact checksums recorded.",
     "noCodeFiles": "No code files.",

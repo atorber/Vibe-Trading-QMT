@@ -21,6 +21,7 @@ def test_every_builtin_portfolio_connector_has_an_explicit_compatibility_tier():
         "etoro": "experimental",
         "futu": "experimental",
         "ibkr": "native",
+        "kis": "experimental",
         "longbridge": "native",
         "mt5": "experimental",
         "okx": "contract_tested",
@@ -28,6 +29,8 @@ def test_every_builtin_portfolio_connector_has_an_explicit_compatibility_tier():
         "tiger": "experimental",
         "trading212": "experimental",
         "zerodha": "experimental",
+        "upbit": "experimental",
+        "toss": "experimental",
     }
 
     observed = {profile.connector: profile_compatibility(profile)["level"] for profile in eligible_profiles()}
@@ -58,6 +61,16 @@ def test_contract_rejects_position_rows_without_symbol_or_quantity():
 
     with pytest.raises(PortfolioContractError, match="no quantity"):
         adapt_and_validate_payloads("sample", {"account": {}}, {"positions": [{"symbol": "DEMO"}]})
+
+
+def test_contract_rejects_a_positions_read_without_a_positions_list():
+    unmapped = {"status": "ok", "structured_content": {"holdings": [{"symbol": "DEMO", "quantity": 1}]}}
+    for payload in ({}, {"status": "ok"}, unmapped):
+        with pytest.raises(PortfolioContractError, match="must contain a list"):
+            adapt_and_validate_payloads("sample", {"account": {}}, payload)
+
+    _, positions = adapt_and_validate_payloads("sample", {"account": {}}, {"positions": []})
+    assert positions["positions"] == []
 
 
 def test_okx_account_details_are_adapted_to_spot_positions():
