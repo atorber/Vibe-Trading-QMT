@@ -604,6 +604,11 @@ def test_qmt_credit_account_splits_gross_and_net_assets(tmp_path):
     assert account["total_usd"] == pytest.approx(1_200_000.0 / 7.2, rel=1e-6)
     assert account["net_assets_usd"] == pytest.approx(980_000.0 / 7.2, rel=1e-6)
     assert account["total_debt_usd"] == pytest.approx(220_000.0 / 7.2, rel=1e-6)
+    history = service.history()
+    assert len(history) == 1
+    assert history[0]["net_assets_usd"] == pytest.approx(snapshot["net_assets"]["usd"], rel=1e-6)
+    assert history[0]["net_assets_cny"] == pytest.approx(snapshot["net_assets"]["cny"], rel=1e-6)
+    assert history[0]["total_usd"] != history[0]["net_assets_usd"]
 
 
 def test_futu_margin_account_splits_gross_and_net_assets(tmp_path):

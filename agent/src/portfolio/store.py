@@ -144,6 +144,8 @@ class PortfolioStore:
                     "complete": row["complete"],
                     "total_usd": row["total_usd"],
                     "total_cny": row["total_cny"],
+                    "net_assets_usd": row["net_assets_usd"],
+                    "net_assets_cny": row["net_assets_cny"],
                 }
             )
             if len(history) >= row_limit:

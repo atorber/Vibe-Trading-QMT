@@ -244,9 +244,11 @@ function netAssetsAmount(
 
 function historyNetAssets(row: PortfolioHistoryPoint, displayCurrency: "USD" | "CNY") {
   if (displayCurrency === "CNY") {
-    return Number(row.net_assets_cny ?? row.total_cny);
+    if (row.net_assets_cny == null || row.net_assets_cny === "") return null;
+    return Number(row.net_assets_cny);
   }
-  return Number(row.net_assets_usd ?? row.total_usd);
+  if (row.net_assets_usd == null || row.net_assets_usd === "") return null;
+  return Number(row.net_assets_usd);
 }
 
 function historyTotals(row: PortfolioHistoryPoint, displayCurrency: "USD" | "CNY") {
@@ -471,8 +473,10 @@ export function Portfolio() {
     if (!snapshot) return null;
     const baseline = previousTradingDayBaseline(snapshot.created_at, history);
     if (!baseline) return null;
+    const previous = historyNetAssets(baseline, displayCurrency);
+    if (previous == null || Number.isNaN(previous)) return null;
     const current = netAssetsAmount(snapshot.net_assets, snapshot.totals, displayCurrency);
-    return current - historyNetAssets(baseline, displayCurrency);
+    return current - previous;
   }, [snapshot, history, displayCurrency]);
 
   const latestCompleteAt = history.length ? history[history.length - 1].created_at : undefined;
@@ -917,9 +921,14 @@ function HistoryChart({ history, displayCurrency = "USD" }: { history: Portfolio
           const idx = items[0]?.dataIndex;
           const row = idx == null ? undefined : rows[idx];
           if (!row) return "";
-          const lines = items.map(
-            (item) => `${item.seriesName}: ${money(Number(item.value), displayCurrency)}`,
-          );
+          const lines = items.map((item) => {
+            const value = item.value;
+            const text =
+              value == null || Number.isNaN(Number(value))
+                ? "—"
+                : money(Number(value), displayCurrency);
+            return `${item.seriesName}: ${text}`;
+          });
           return `${dateTime(row.created_at)}<br/>${lines.join("<br/>")}`;
         },
       },
